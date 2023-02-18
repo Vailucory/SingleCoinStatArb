@@ -130,6 +130,10 @@ dmypy.json
 
 # Sqlite databases
 *.db
+*.db-journal
 
 # Local configs
 *.json
+
+# Test playground python file
+test_playground.py

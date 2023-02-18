@@ -31,7 +31,7 @@ class MathHelper():
         pass
     
     @staticmethod
-    def is_price_exceed_limit(enter_price, current_price, leverage, limit, order_type):
+    def is_price_exceeded_limit(enter_price, current_price, leverage, limit, order_type):
         if order_type == 'BUY':
             #            200    /  1400 * 20 * 100 = 333.3
             #        1400 - 1200 / 1200 * 20 * 100 = 333.3
@@ -81,33 +81,9 @@ class MathHelper():
         pass
         return prediction
 
-    @staticmethod
-    def calculate_quantity(total, entry_price, stop_loss_price, precision, minimum_notion):
-        #risk = 1.0/100#%
-        risk = 0.05/100#%
-        max_risk = risk * total
-        risk_per_coin = abs(entry_price - stop_loss_price)
-        #100
-        #5
-        quantity = round(max_risk / risk_per_coin, precision)
-        #100 * 1.2 = 120
-        #5 * 1.2 = 6
-        if quantity * stop_loss_price > minimum_notion:
-            return quantity
-
-        #1/(10^precision)
-        #0 1
-        #1 0.1
-        #2 0.01
-        delta_qnty = 1 / (10**precision)
-        while True:
-            quantity += delta_qnty
-            if quantity * stop_loss_price > minimum_notion:
-                return round(quantity, precision)
-            pass
             
     @staticmethod
-    def calculate_min_reversion_quantity(total, entry_price, precision, minimum_notion, maximum_notion, leverage = 20):
+    def calculate_quantity(total, entry_price, precision, minimum_notion, maximum_notion, leverage = 20):
         #TODO
 
         risk = 2.5/100#%
@@ -161,11 +137,8 @@ class MathHelper():
     @staticmethod
     def calculate_order_stop_price(current_price, tick_size, stop_percentage, leverage, side):
         
-        delta_price = current_price * stop_percentage / 100 / leverage 
         if side == 'BUY':
-             
             return round_step_size(-(stop_percentage/(leverage * 100) * current_price) + current_price, tick_size)
-            #return round_step_size(current_price-delta_price, tick_size)
         elif side == 'SELL':
             return round_step_size(stop_percentage/(leverage * 100)*current_price + current_price, tick_size)
         else:

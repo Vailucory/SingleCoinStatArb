@@ -38,6 +38,7 @@ BACKTEST_MODE = True
 PRODUCTION_MODE = False
 USE_VIRTUAL_KOTLETA = True
 USE_MIN_REVERSION = True
+ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD = 15/100# 15%
 
 
 config = ConfigManager.config
@@ -48,14 +49,13 @@ client = UMFutures(config['api_key'], config['api_secret'])
 #klines = klines_1m[close_time]
 
 #pair, adf, eg, deviation, lin_reg_coef_a, lin_reg_coef_b, time
-def add_update_backtest_pairs_cointegrations(cointegrations):
-    active_pairs = BacktestRepository.get_active_pairs_symbols()
-    pairs_to_update = list([c for c in cointegrations if active_pairs.__contains__(c[0])])
-    BacktestRepository.update_active_pairs(pairs_to_update)
-    #pairs_to_add = list([c for c in cointegrations if c[1] <= config['adf_value_threshold'] and c[2] <= config['adf_value_threshold']])
-    pairs_to_add = list([c for c in cointegrations if c[1] <= config['adf_value_threshold'] and c[6] < 0.5])
-    BacktestRepository.add_active_pairs(pairs_to_add)
+def add_update_backtest_symbols(symbols):
 
+    if len(BacktestRepository.get_active_symbols()) == 0:
+        BacktestRepository.add_active_symbols(symbols)
+        return
+    
+    BacktestRepository.update_symbols(symbols)
     pass
 
 def run_backtest():
@@ -64,29 +64,19 @@ def run_backtest():
     bar_count = ConfigManager.config['bar_count']
     interval = interval_to_time(ConfigManager.config['kline_interval']) * 1000
     coins = list([c[0] for c in BacktestRepository.get_all_currencies()])
-    #1668617999999 1668621599999
-    #index = close_times.index(1668621599999)
     #168-912
-    start_index = 1196
+    start_index = bar_count
     end_index = len(close_times)
-    #BacktestRepository.set_burst_starting_balance(None)
-    #is_burst_started = False
     for i in range(start_index, end_index):
-        is_burst_started = BacktestRepository.get_burst_starting_balance() is not None
-        if not is_burst_started:
-            BacktestRepository.Execute("DELETE FROM active_pairs")
-            BacktestRepository.set_burst_starting_balance(BacktestRepository.get_virtual_kotleta())
-            BacktestRepository.set_is_order_creation_allowed(1)
-            BacktestRepository.set_is_program_shutdown_started(0)
         start_logging_time = time.time()
         t0 = close_times[i - bar_count]
         t1 = close_times[i]
         t2 = t1 - interval
 
-        cointegrations = BacktestRepository.get_cointegrations(t1)
+        preloaded_symbols_info = BacktestRepository.get_preloaded_symbols_info(time=t1)
+        klines_1h = BacktestRepository.get_backtest_klines1h(start_time=t0, end_time=t1) 
+        process_backtest_slice(t2,t1, preloaded_symbols_info, coins, klines_1h)
 
-        klines_1h = BacktestRepository.get_backtest_klines1h(t0, t1) 
-        process_backtest_slice(t2,t1, cointegrations, coins, klines_1h)
         print('Done! | Time elapsed: {0} | {1}/{2}'.format(time.time()-start_logging_time, i, len(close_times)))
     
     max_klines_1m_time = BacktestRepository.get_max_klines_1m_time()
@@ -108,16 +98,14 @@ def is_coins_disabled(coin1:str, coin2:str)->bool:
     disabled_symbols = Repository.get_disabled_symbols()
     return disabled_symbols.__contains__(coin1) or disabled_symbols.__contains__(coin2)
 
-def process_backtest_slice(start_time:int, end_time, cointegrations, coins, klines_1h, is_trade_creation_allowed=True):
-    if is_trade_creation_allowed:
-        if BacktestRepository.get_burst_starting_balance() is not None:
-            add_update_backtest_pairs_cointegrations(cointegrations)
-            BacktestRepository.delete_uncointegrated_pairs()
-        else:
-            add_update_backtest_pairs_cointegrations(cointegrations)
+def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coins, klines_1h, is_trade_creation_allowed=True):
+
+    add_update_backtest_symbols(preloaded_symbols_info)
+    
+        
     klines_1m = BacktestRepository.get_backtest_klines1m(start_time, end_time)
     keys = list(klines_1m.keys())
-    symbol = 0
+    symbol_info = 0
     high = 1
     low = 2
     close = 3
@@ -127,363 +115,256 @@ def process_backtest_slice(start_time:int, end_time, cointegrations, coins, klin
         #check active orders for completion
         coins_with_active_orders = BacktestRepository.get_coins_with_open_orders()
 
+        klines_with_active_orders = {}
+        [klines_with_active_orders.update({k[symbol_info]:k}) for k in klines if coins_with_active_orders.__contains__(k[symbol_info])]
         
+        for order in BacktestRepository.get_all_orders():
+            current_price = klines_with_active_orders[order[orders_definition.symbol]][close]
+            current_profit = order[orders_definition.currentProfit] + MathHelper.calculate_order_profit(enter_price=order[orders_definition.lastPrice],
+                                                                                                triggered_price=current_price,
+                                                                                                quantity=order[orders_definition.origQty],
+                                                                                                order_type=order[orders_definition.side])
+            BacktestRepository.add_to_available_balance(current_profit-order[orders_definition.currentProfit], close_time)
+            BacktestRepository.update_order_current_parameters(current_profit=current_profit,
+                                                                last_price=current_price,
+                                                                symbol=order[orders_definition.symbol])
+    
+        is_program_shutdown_started = BacktestRepository.get_is_program_shutdown_started()
+        #for coin1, coin2 in BacktestRepository.get_coins_with_open_orders_by_hedges():
+        for symbol_info in BacktestRepository.get_coins_with_open_orders():
 
-        if USE_MIN_REVERSION:
-            klines_with_active_orders = {}
-            [klines_with_active_orders.update({k[symbol]:k}) for k in klines if coins_with_active_orders.__contains__(k[symbol])]
+            market = BacktestRepository.get_active_order_by_type(symbol_info, 'MARKET') 
+            deviation, lin_reg_coef_a, lin_reg_coef_b = BacktestRepository.get_symbol_info(market[orders_definition.symbol])
+            current_price = klines_with_active_orders[market[orders_definition.symbol]][close]
+
+            if close_time - market[orders_definition.updateTime] > interval_to_time(ConfigManager.config['order_stop_limit_time']) * 1000:
+                #close trades via market and exit
+                close_market_order(market, current_price, close_time, 'TIME_STOP')
+                continue
             
-            for order in BacktestRepository.get_all_orders():
-                current_price = klines_with_active_orders[order[orders_definition.symbol]][close]
-                current_profit = order[orders_definition.currentProfit] + MathHelper.calculate_order_profit(enter_price=order[orders_definition.lastPrice],
-                                                                                                    triggered_price=current_price,
-                                                                                                    quantity=order[orders_definition.origQty],
-                                                                                                    order_type=order[orders_definition.side])
-                BacktestRepository.add_to_kotleta(current_profit-order[orders_definition.currentProfit], close_time)
-                BacktestRepository.update_order_current_parameters(current_profit=current_profit,
-                                                                    last_price=current_price,
-                                                                    symbol=order[orders_definition.symbol])
-        
-            burst_starting_balance = BacktestRepository.get_burst_starting_balance()
-            availible_balance = BacktestRepository.get_virtual_kotleta()+sum([cp[0] for cp in BacktestRepository.ExecuteWithResult("SELECT currentProfit FROM orders;")])
-            burst_win_percentage = (availible_balance - burst_starting_balance)/availible_balance * 100
-            if burst_win_percentage > 10 or burst_win_percentage < -10:
-                BacktestRepository.set_is_order_creation_allowed(0)
-                BacktestRepository.set_is_program_shutdown_started(1)
-            is_program_shutdown_started = BacktestRepository.get_is_program_shutdown_started()
-            for coin1, coin2 in BacktestRepository.get_coins_with_open_orders_by_hedges():
-                market1 = BacktestRepository.get_active_order_by_type(coin1, 'MARKET') 
-                market2 = BacktestRepository.get_active_order_by_type(coin2, 'MARKET') 
-
-                pair, deviation, lin_reg_coef_a, lin_reg_coef_b = BacktestRepository.get_pair_by_coins(market1[orders_definition.symbol], market2[orders_definition.symbol])
-
-
-                coin1_current_price = klines_with_active_orders[market1[orders_definition.symbol]][close]
-                coin2_current_price = klines_with_active_orders[market2[orders_definition.symbol]][close]
-
-                if close_time - market1[orders_definition.updateTime] > interval_to_time(ConfigManager.config['min_reversion_stop_time']) * 1000:
-                    #close trades via market and exit
-                    close_market_orders(((market1, coin1_current_price), (market2, coin2_current_price)), close_time, 'TIME_STOP', pair)
-                    continue
-                #entering_relation_price = market1[orders_definition.price]/market2[orders_definition.price]
-                current_relation_price = coin1_current_price/coin2_current_price
-                #calculate bounds
-                coefficients_linear_regression = (lin_reg_coef_a, lin_reg_coef_b)
-                linear_regression_bound = MathHelper.calculate_polynom(close_time, coefficients_linear_regression)
-                price_stop_percentage = BacktestRepository.get_price_stop_percentage()
-                market1_exceed_limits = MathHelper.is_price_exceed_limit(market1[orders_definition.price], coin1_current_price, market1[orders_definition.leverage], price_stop_percentage, market1[orders_definition.side])
-                market2_exceed_limits = MathHelper.is_price_exceed_limit(market2[orders_definition.price], coin2_current_price, market2[orders_definition.leverage], price_stop_percentage, market2[orders_definition.side])
-                
-                if is_program_shutdown_started:
-                    close_market_orders(((market1, coin1_current_price), (market2, coin2_current_price)), close_time, 'PROGRAM_CLOSING', pair)  
-                elif market1_exceed_limits[0] or market2_exceed_limits[0]:
-                    close_market_orders(((market1, coin1_current_price), (market2, coin2_current_price)), close_time, 'PRICE_STOP_LIMIT_EXCEED', pair)
-                    BacktestRepository.log_message(f"Pair {market1[orders_definition.symbol]}/{market2[orders_definition.symbol]} exceed price stop limit with {market1[orders_definition.symbol]}: {market1_exceed_limits[1]} and {market2[orders_definition.symbol]}: {market2_exceed_limits[1]}. HedgeId: {market1[orders_definition.hedgeId]}")
-                #up: 1 short(sell), 2 long(buy)
-                #down: 1 long(buy), 2 short(sell)
-                #we entered when crossed upper deviation bound
-                elif market1[orders_definition.side] == 'SELL':
-                    #close markets if relation price is lower than linear regression bound
-                    if current_relation_price <= linear_regression_bound:
-                        close_market_orders(((market1, coin1_current_price), (market2, coin2_current_price)), close_time, 'LINEAR_REGRESSION_CROSSING', pair)
-                #we entered when crossed lower deviation bound
-                else:
-                    #close markets if relation price is higher than linear regression bound
-                    if current_relation_price >= linear_regression_bound:
-                        close_market_orders(((market1, coin1_current_price), (market2, coin2_current_price)), close_time, 'LINEAR_REGRESSION_CROSSING', pair)
+            #calculate bounds
+            coefficients_linear_regression = (lin_reg_coef_a, lin_reg_coef_b)
+            linear_regression_bound = MathHelper.calculate_polynom(close_time, coefficients_linear_regression)
+            price_stop_percentage = BacktestRepository.get_price_stop_percentage()
+            market_exceeded_limits = MathHelper.is_price_exceeded_limit(market[orders_definition.price], current_price, market[orders_definition.leverage], price_stop_percentage, market[orders_definition.side])
+            
+            if is_program_shutdown_started:
+                close_market_order(market, current_price, close_time, 'PROGRAM_CLOSURE')  
+            elif market_exceeded_limits[0]:
+                close_market_order(market, current_price, close_time, 'PRICE_STOP_LIMIT_EXCEEDED')
+                BacktestRepository.log_message(f"Symbol {market[orders_definition.symbol]} exceeded price stop limit with: {market_exceeded_limits[1]}. TradeId: {market[orders_definition.tradeId]}")
+            #up: short(sell)
+            #down: long(buy)
+            #we entered when crossed upper deviation bound
+            elif market[orders_definition.side] == 'SELL':
+                #close market order if current price is lower than linear regression bound
+                if current_price <= linear_regression_bound:
+                    close_market_order(market, current_price, close_time, 'LINEAR_REGRESSION_CROSSING')
+            #we entered when crossed lower deviation bound
+            else:
+                #close market order if current price is higher than linear regression bound
+                if current_price >= linear_regression_bound:
+                    close_market_order(market, current_price, close_time, 'LINEAR_REGRESSION_CROSSING')
         
         if not is_trade_creation_allowed:
             continue
-        if burst_win_percentage > 10 or burst_win_percentage < -10:
-            
-            BacktestRepository.set_burst_starting_balance(None)
-            BacktestRepository.log_message(f"Burst ended with burst percentage {burst_win_percentage}")
-            return
-        active_pairs = BacktestRepository.get_active_pairs() 
-        active_pairs_coins = []   
-        for pair in active_pairs:
-            active_pairs_coins.extend(pair[0].split('/'))   
-        active_pairs_coins = unique(active_pairs_coins)
-        active_pairs_coins_klines = {}
-        [active_pairs_coins_klines.update({k[symbol]:k}) for k in klines if active_pairs_coins.__contains__(k[symbol])]
-        #active_pairs_coins_klines = [{k[symbol]:k} for k in klines if active_pairs_coins.__contains__(k[symbol])]
-        for pair in active_pairs:
+        
+        active_symbols = BacktestRepository.get_active_symbols() 
 
-            coin1 = pair[0].split('/')[0]
-            coin2 = pair[0].split('/')[1]
+        active_symbols_klines = {}
+        [active_symbols_klines.update({k[symbol_info]:k}) for k in klines if [symbol[0] for symbol in active_symbols].__contains__(k[symbol_info])]
+        for symbol_info in active_symbols:
 
-            is_outside_deviations = bool(pair[3]) 
-            adf = pair[1]
-            cointegration_treshold = ConfigManager.config['adf_value_threshold']
-
-            #exit if active orders on coins
-            if BacktestRepository.check_if_orders_available(coin1) or BacktestRepository.check_if_orders_available(coin2):
-                #print('Exit due to availible orders|BACKTEST|Time elapsed: {0}'.format(time.time() - pair_start_time))
+            symbol = symbol_info[0]
+            hurst_exponent = symbol_info[4]
+            is_outside_deviations = bool(symbol_info[5]) 
+            #exit if active order on coin
+            if BacktestRepository.check_if_orders_available(symbol):
                 continue
 
             if is_outside_deviations:
                 #getting linear regression polynom coefficients and deviation value
                 deviation_multiplier = ConfigManager.config['lin_reg_deviation']
-                deviation = pair[4]
-                coefficients_linear_regression = (pair[5], pair[6])
-                coefficients_up = (pair[5], pair[6] + (deviation * deviation_multiplier))
-                coefficients_down = (pair[5], pair[6] - (deviation * deviation_multiplier))
+                deviation = symbol_info[1]
+                coefficients_linear_regression = (symbol_info[2], symbol_info[3])
+                coefficients_up = (symbol_info[2], symbol_info[3] + (deviation * deviation_multiplier))
+                coefficients_down = (symbol_info[2], symbol_info[3] - (deviation * deviation_multiplier))
                 epoch_time = close_time
                 upper_bound = MathHelper.calculate_polynom(epoch_time, coefficients_up)
                 lower_bound = MathHelper.calculate_polynom(epoch_time, coefficients_down)
                 linear_regression_bound = MathHelper.calculate_polynom(epoch_time, coefficients_linear_regression)
                 #calculating pair relation at the moment
-                coin1_price = active_pairs_coins_klines[coin1][close]
-                coin2_price = active_pairs_coins_klines[coin2][close]
+                coin_price = active_symbols_klines[symbol][close]
 
-
-                
-                
-                pair_relation_price = coin1_price/coin2_price
-                if pair_relation_price < upper_bound and pair_relation_price > lower_bound:
+                #TODO: Change is_outside_deviation behaviour 
+                # so it's should be triggered only if current price exceeded bound for 1h or so
+                # to prevent order creation on exiting deviation instead of returning move
+                if coin_price < upper_bound and coin_price > lower_bound:
                     
                     
-                    BacktestRepository.update_pair_is_outside_deviations(pair=pair[0], is_outside_deviations=0)
-                    #1000
-                    kotleta=0
-                    if USE_VIRTUAL_KOTLETA:
-                        kotleta = BacktestRepository.get_virtual_kotleta()
-                        if BacktestRepository.get_kotleta() < kotleta * 0.15:
-                            continue
-                    else:
-                        kotleta = BacktestRepository.get_kotleta()
+                    BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0)
+
+                    balance = BacktestRepository.get_balance()
+                    if BacktestRepository.get_available_balance() < balance * ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD:
+                        continue
+                    
                     if not BacktestRepository.get_is_order_creation_allowed():
                         continue
 
-                    coin1_info = BacktestRepository.get_currency(coin1)
-                    coin1_max_notional = 1000000
+                    currency_info = BacktestRepository.get_currency(symbol)
+                    max_notional = 1000000
 
-                    coin2_info = BacktestRepository.get_currency(coin2)
-                    coin2_max_notional = 1000000
-                    leverage = min(coin1_info[5], coin2_info[5])
-                    if not BACKTEST_MODE:
-                        coin1_max_notional = change_leverage(client, coin1, leverage)
-                        coin2_max_notional = change_leverage(client, coin2, leverage)
+                    leverage = currency_info[5]
+                    side = 'SELL' if coin_price > linear_regression_bound else 'BUY'
 
-                            
-
-                    if pair_relation_price > linear_regression_bound:
-                        long_quantity = MathHelper.calculate_min_reversion_quantity(
-                                                                      total=kotleta,
-                                                                      entry_price=coin2_price,
-                                                                      precision=coin2_info[2],
-                                                                      minimum_notion=coin2_info[3],
-                                                                      maximum_notion=coin2_max_notional,
-                                                                      leverage=leverage)
-                        short_quantity = MathHelper.calculate_min_reversion_quantity(
-                                                                      total=kotleta,
-                                                                      entry_price=coin1_price,
-                                                                      precision=coin1_info[2],
-                                                                      minimum_notion=coin1_info[3],
-                                                                      maximum_notion=coin1_max_notional,
-                                                                      leverage=leverage)
-                        place_hedge_order(coin_long=coin2, quantity_long=long_quantity, long_current_price=coin2_price, long_stop_price=None,
-                                          coin_short=coin1, quantity_short=short_quantity, short_current_price=coin1_price, short_stop_price=None, leverage=leverage, backtest_time=close_time)  
-                    else:
-                        long_quantity = MathHelper.calculate_min_reversion_quantity(
-                                                                      total=kotleta,
-                                                                      entry_price=coin1_price,
-                                                                      precision=coin1_info[2],
-                                                                      minimum_notion=coin1_info[3],
-                                                                      maximum_notion=coin1_max_notional,
-                                                                      leverage=leverage)
-                        short_quantity = MathHelper.calculate_min_reversion_quantity(
-                                                                      total=kotleta,
-                                                                      entry_price=coin2_price,
-                                                                      precision=coin2_info[2],
-                                                                      minimum_notion=coin2_info[3],
-                                                                      maximum_notion=coin2_max_notional,
-                                                                      leverage=leverage)
-                        place_hedge_order(coin_long=coin1, quantity_long=long_quantity, long_current_price=coin1_price, long_stop_price=None,
-                                          coin_short=coin2, quantity_short=short_quantity, short_current_price=coin2_price, short_stop_price=None, leverage=leverage, backtest_time=close_time) 
-                        pass
+                    quantity = MathHelper.calculate_quantity(total=balance,
+                                                             entry_price=coin_price,
+                                                             precision=currency_info[2],
+                                                             minimum_notion=currency_info[3],
+                                                             maximum_notion=max_notional,
+                                                             leverage=leverage)
+                    
+                    manage_market_order_creation(coin=symbol, 
+                                                quantity=quantity, 
+                                                current_price=coin_price, 
+                                                side=side,
+                                                stop_price=None,
+                                                leverage=leverage, 
+                                                backtest_time=close_time)  
+                    
                     continue
                 pass
             
-                  
-
-
-            #exit if pair not cointegrated
-            if adf > cointegration_treshold:
-                #print('Exit due to coint treshold|Time elapsed: {0}'.format(time.time() - pair_start_time))
+    
+            #exit if not anti-persistent series
+            if hurst_exponent >= 0.5:
                 continue
-            
-            
 
             deviation_multiplier = ConfigManager.config['lin_reg_deviation']
-            deviation = pair[4]
-            coefficients_up = (pair[5], pair[6] + (deviation * deviation_multiplier))
-            coefficients_down = (pair[5], pair[6] - (deviation * deviation_multiplier))
+            deviation = symbol_info[1]
+            coefficients_up = (symbol_info[2], symbol_info[3] + (deviation * deviation_multiplier))
+            coefficients_down = (symbol_info[2], symbol_info[3] - (deviation * deviation_multiplier))
             epoch_time = close_time
             upper_bound = MathHelper.calculate_polynom(epoch_time, coefficients_up)
             lower_bound = MathHelper.calculate_polynom(epoch_time, coefficients_down)
 
 
-            coin1_price = active_pairs_coins_klines[coin1][close]
-            coin2_price = active_pairs_coins_klines[coin2][close]
-            
-            pair_relation_price = coin1_price/coin2_price
-            if pair_relation_price > upper_bound or pair_relation_price < lower_bound:
-                BacktestRepository.update_pair_is_outside_deviations(pair=pair[0], is_outside_deviations=1)        
+            coin_price = active_symbols_klines[symbol][close]
+
+            if coin_price > upper_bound or coin_price < lower_bound:
+                BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=1)        
         pass
         
 
 
     pass
 
-def close_market_orders(orders, exit_time, type, pair):
+def close_market_order(market, current_price, exit_time, type, limit_order=None, status=None):
     
-    if PRODUCTION_MODE:
-        #TODO
-        # handle slippage properly                                    
-        
-        for market, current_price, limit_order, status in orders:
-            leverage = market[orders_definition.leverage]
-
-            coin_current_leverage, coin_current_max_notional = Repository.get_current_leverage_and_max_notional(market[orders_definition.symbol])
-            if coin_current_leverage != leverage:
-                coin_max_notional = change_leverage(client, market[orders_definition.symbol], leverage)
-                Repository.update_current_leverage_and_max_notional(market[orders_definition.symbol], leverage, coin_max_notional)        
-            else:
-                coin_max_notional = coin_current_max_notional 
-                leverage = coin_current_leverage
-            
-            side = 'SELL' if market[orders_definition.side] == 'BUY' else 'BUY'
-            if status == 'NORMAL':
-                print('NORMAL')
-                if limit_order is None or cancel_order(client, market[orders_definition.symbol], limit_order['orderId']):
-                    #close by market if limit was not triggered 
-                    print('NORMAL AFTER CLOSING')
-                    order_market = place_api_order(client = client,
-                                                symbol = market[orders_definition.symbol],
-                                                side = side,
-                                                reduceOnly=True,
-                                                quantity = market[orders_definition.origQty])
-            #elif status == 'FILLED_PARTIALLY':
-            #    print('FILLED_PARTIALLY')
-            #    if cancel_order(client, market[orders_definition.symbol], limit_order['orderId']):
-            #        #close by market partially if limit was not triggered
-            #        print('FILLED_PARTIALLY AFTER CLOSING')
-            #        coin_quantity_precision = Repository.get_currency(market[orders_definition.symbol])[2]
-            #        qty_to_fill = round(market[orders_definition.origQty] - double(limit_order['executedQty']), coin_quantity_precision)
-            #        order_market = place_api_order(client = client,
-            #                                    symbol = market[orders_definition.symbol],
-            #                                    side = side,
-            #                                    reduceOnly=True,
-            #                                    quantity = qty_to_fill)
-            elif status == 'FILLED':
-                print('FILLED')
-                #already closed position with limit
-                continue
-            pass
+    if PRODUCTION_MODE:                              
         
 
-        time.sleep(5)        
-        for market, current_price, limit_order, status in orders:
+        leverage = market[orders_definition.leverage]
 
-            
+        coin_current_leverage, coin_current_max_notional = Repository.get_current_leverage_and_max_notional(market[orders_definition.symbol])
+        if coin_current_leverage != leverage:
+            coin_max_notional = change_leverage(client, market[orders_definition.symbol], leverage)
+            Repository.update_current_leverage_and_max_notional(market[orders_definition.symbol], leverage, coin_max_notional)        
+        else:
+            coin_max_notional = coin_current_max_notional 
+            leverage = coin_current_leverage
+        
+        side = 'SELL' if market[orders_definition.side] == 'BUY' else 'BUY'
+        if status == 'NORMAL':
+            print('NORMAL')
+            if limit_order is None or cancel_order(client, market[orders_definition.symbol], limit_order['orderId']):
+                order_market = place_api_order(client = client,
+                                            symbol = market[orders_definition.symbol],
+                                            side = side,
+                                            reduceOnly=True,
+                                            quantity = market[orders_definition.origQty])
+        elif status == 'FILLED':
+            #already closed position with stop market so don't need to do anything
+            print('FILLED')
 
+        trades = get_account_trades(client, market[orders_definition.symbol])
+        
 
-            trades = get_account_trades(client, market[orders_definition.symbol])
-            
+        if len(trades) < 2:
+            raise Exception(f'Less than 2 trades avalible for {market[orders_definition.symbol]}')
+        
+        first_enter_trade = [t for t in trades if t['orderId'] == market[orders_definition.orderId]][0]
+        current_trades = [t for t in trades if t['time'] >= first_enter_trade['time']]
 
-            if len(trades) < 2:
-                raise Exception(f'Less than 2 trades avalible for {market[orders_definition.symbol]}')
-            
-            first_enter_trade = [t for t in trades if t['orderId'] == market[orders_definition.orderId]][0]
-            current_trades = [t for t in trades if t['time'] >= first_enter_trade['time']]
+        enter_trades = [t for t in current_trades if t['side'] == first_enter_trade['side']]
+        exit_trades = [t for t in current_trades if t['side'] != first_enter_trade['side']]
+        last_exit_trade = exit_trades[-1]
 
-            enter_trades = [t for t in current_trades if t['side'] == first_enter_trade['side']]
-            exit_trades = [t for t in current_trades if t['side'] != first_enter_trade['side']]
-            last_exit_trade = exit_trades[-1]
+        pnl = sum([double(t['realizedPnl']) for t in exit_trades])
+        qty = market[orders_definition.origQty]
+        exit_commission = sum([double(t['commission']) for t in exit_trades])
+        enter_commission = sum([double(t['commission']) for t in enter_trades])
 
-            pnl = sum([double(t['realizedPnl']) for t in exit_trades])
-            qty = market[orders_definition.origQty]
-            exit_commission = sum([double(t['commission']) for t in exit_trades])
-            enter_commission = sum([double(t['commission']) for t in enter_trades])
+        exit_price = sum([double(t['quoteQty']) for t in exit_trades]) / qty
+        enter_price = sum([double(t['quoteQty']) for t in enter_trades]) / qty
 
-            exit_price = sum([double(t['quoteQty']) for t in exit_trades]) / qty
-            enter_price = sum([double(t['quoteQty']) for t in enter_trades]) / qty
+        trade = {}
+        trade.update({'symbol':market[orders_definition.symbol]})      # first_enter                     
+        trade.update({'openOrderId':first_enter_trade['orderId']})     # first_enter                        
+        trade.update({'closeOrderId':last_exit_trade['orderId']})      # last_exit                             
+        trade.update({'triggeredOrderType':type})                      # first_enter                 
+        trade.update({'side':first_enter_trade['side']})               # first_enter      
+        trade.update({'enterPrice':enter_price})                       # avg                         
+        trade.update({'exitPrice':exit_price})                         # avg pos = (5 * 10 + 10 * 20) / 15 = 16,66                     
+        trade.update({'qty':qty})                                      # +            
+        trade.update({'realizedPnl':pnl})                              # +                             
+        trade.update({'enterCommission':enter_commission})             # +            
+        trade.update({'exitCommission':exit_commission})               # +              
+        trade.update({'enterTime':first_enter_trade['time']})          # first_enter                
+        trade.update({'exitTime':last_exit_trade['time']})             # last_exit                
+        trade.update({'hedgeId':market[orders_definition.hedgeId]})  
+        Repository.add_trade(trade)
+        Repository.remove_orders(market[orders_definition.symbol])
+        Repository.archive_order(market)                         
+        balance_entry = get_production_balance(client)
+        Repository.set_available_balance(balance_entry['available_balance'])
+        Repository.set_balance(balance_entry['balance'])
+    elif BACKTEST_MODE:
+        profit = market[orders_definition.currentProfit] - MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
+        BacktestRepository.add_backtest_result(symbol=market[orders_definition.symbol],
+                                    triggered_order_type=type,
+                                    profit=profit-MathHelper.calculate_entering_market_commission(enter_price=market[orders_definition.price], quantity=market[orders_definition.origQty]),
+                                    exit_time=exit_time,
+                                    enter_time=market[orders_definition.updateTime],
+                                    tradeId=market[orders_definition.tradeId],
+                                    hedgeId=market[orders_definition.hedgeId])
+        BacktestRepository.remove_orders(market[orders_definition.symbol])
+        #we need to discard last two fields
+        BacktestRepository.archive_order(market[:orders_definition.lastPrice])
 
-            trade = {}
-            trade.update({'symbol':market[orders_definition.symbol]})      # first_enter                     
-            trade.update({'openOrderId':first_enter_trade['orderId']})     # first_enter                        
-            trade.update({'closeOrderId':last_exit_trade['orderId']})      # last_exit                             
-            trade.update({'triggeredOrderType':type})                      # first_enter                 
-            trade.update({'side':first_enter_trade['side']})               # first_enter      
-            trade.update({'enterPrice':enter_price})                       # avg                         
-            trade.update({'exitPrice':exit_price})                         # avg pos = (5 * 10 + 10 * 20) / 15 = 16,66                     
-            trade.update({'qty':qty})                                      # +            
-            trade.update({'realizedPnl':pnl})                              # +                             
-            trade.update({'enterCommission':enter_commission})             # +            
-            trade.update({'exitCommission':exit_commission})               # +              
-            trade.update({'enterTime':first_enter_trade['time']})          # first_enter                
-            trade.update({'exitTime':last_exit_trade['time']})             # last_exit                
-            trade.update({'hedgeId':market[orders_definition.hedgeId]})  
-            Repository.add_trade(trade)
-            Repository.remove_orders(market[orders_definition.symbol])
-            Repository.archive_order(market)    
-            Repository.delete_pair(pair)                        
-        balance = get_production_balance(client)
-        Repository.set_kotleta(balance['available_balance'])
-        Repository.set_virtual_kotleta(balance['balance'])
-        return
-
-    for market, current_price in orders:
-        if BACKTEST_MODE:
-            #profit = MathHelper.calculate_order_profit(enter_price=market[orders_definition.price],
-            #                                                    triggered_price=current_price,
-            #                                                    quantity=market[orders_definition.origQty],
-            #                                                    order_type=market[orders_definition.side])- MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
-            profit = market[orders_definition.currentProfit] - MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
-            BacktestRepository.add_backtest_result(symbol=market[orders_definition.symbol],
-                                        triggered_order_type=type,
-                                        profit=profit-MathHelper.calculate_entering_market_commission(enter_price=market[orders_definition.price], quantity=market[orders_definition.origQty]),
-                                        exit_time=exit_time,
-                                        enter_time=market[orders_definition.updateTime],
-                                        tradeId=market[orders_definition.tradeId],
-                                        hedgeId=market[orders_definition.hedgeId])
-            BacktestRepository.remove_orders(market[orders_definition.symbol])
-            #we need to discard last two fields
-            BacktestRepository.archive_order(market[:orders_definition.lastPrice])
-
+        exit_commission = -MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
+        BacktestRepository.set_available_balance(BacktestRepository.get_available_balance()+market[orders_definition.origQty]/market[orders_definition.leverage]*market[orders_definition.price]+exit_commission, exit_time)
+        BacktestRepository.add_to_balance(profit, exit_time)
+    elif ONLINE_TEST_MODE:
+        profit = market[orders_definition.currentProfit] - MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
+        Repository.add_test_result(symbol=market[orders_definition.symbol],
+                                    triggered_order_type=type,
+                                    profit=profit-MathHelper.calculate_entering_market_commission(enter_price=market[orders_definition.price], quantity=market[orders_definition.origQty]),
+                                    enter_price=market[orders_definition.price],
+                                    exit_price=current_price,
+                                    enter_time=market[orders_definition.updateTime],
+                                    exit_time=exit_time,
+                                    tradeId=market[orders_definition.tradeId],
+                                    hedgeId=market[orders_definition.hedgeId],
+                                    leverage=market[orders_definition.leverage])
+        Repository.remove_orders(market[orders_definition.symbol])
+        #we need to discard 2 last fields
+        Repository.archive_order(market[:orders_definition.lastPrice])                            
+        Repository.set_available_balance(Repository.get_available_balance()+market[orders_definition.origQty]/market[orders_definition.leverage]*market[orders_definition.price]+profit)
+        if USE_VIRTUAL_KOTLETA:
             exit_commission = -MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
-            BacktestRepository.set_kotleta(BacktestRepository.get_kotleta()+market[orders_definition.origQty]/market[orders_definition.leverage]*market[orders_definition.price]+exit_commission, exit_time)
-            if USE_VIRTUAL_KOTLETA:
-                BacktestRepository.add_to_virtual_kotleta(profit, exit_time)
-        elif ONLINE_TEST_MODE:
-            #profit = MathHelper.calculate_order_profit(enter_price=market[orders_definition.price],
-            #                                                    triggered_price=current_price,
-            #                                                    quantity=market[orders_definition.origQty],
-            #                                                    order_type=market[orders_definition.side]) - MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
-            profit = market[orders_definition.currentProfit] - MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
-            Repository.add_test_result(symbol=market[orders_definition.symbol],
-                                        triggered_order_type=type,
-                                        profit=profit-MathHelper.calculate_entering_market_commission(enter_price=market[orders_definition.price], quantity=market[orders_definition.origQty]),
-                                        enter_price=market[orders_definition.price],
-                                        exit_price=current_price,
-                                        enter_time=market[orders_definition.updateTime],
-                                        exit_time=exit_time,
-                                        tradeId=market[orders_definition.tradeId],
-                                        hedgeId=market[orders_definition.hedgeId],
-                                        leverage=market[orders_definition.leverage])
-            Repository.remove_orders(market[orders_definition.symbol])
-            #we need to discard 2 last fields
-            Repository.archive_order(market[:orders_definition.lastPrice])                            
-            Repository.set_kotleta(Repository.get_kotleta()+market[orders_definition.origQty]/market[orders_definition.leverage]*market[orders_definition.price]+profit)
-            if USE_VIRTUAL_KOTLETA:
-                exit_commission = -MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
-                Repository.add_to_virtual_kotleta(exit_commission)
+            Repository.add_to_balance(exit_commission)
         
-    if BACKTEST_MODE:
-        BacktestRepository.delete_pair(pair)
-    else:
-        Repository.delete_pair(pair)
 
 
 def split(a:list, n:int):
@@ -818,190 +699,81 @@ def change_leverage(client, coin, leverage):
         time.sleep(1)
 
 
-def place_hedge_order(coin_long, quantity_long, long_current_price, long_stop_price, 
-                      coin_short, quantity_short, short_current_price, short_stop_price, leverage = 20, backtest_time = None):
+def manage_market_order_creation(coin, quantity, side, current_price, stop_price, leverage = 20, backtest_time = None):
     
 
 
-    long_order_id = int(time.time() * 1000)
-    hedgeId = int(time.time() * 1000)
+    order_id = int(time.time() * 1000)
     
     
     try:
-        if ONLINE_TEST_MODE:
-            Repository.set_kotleta(MathHelper.calculate_balance_after_entering_market(Repository.get_kotleta(), long_current_price, quantity_long, leverage))
         if BACKTEST_MODE:
-            BacktestRepository.set_kotleta(MathHelper.calculate_balance_after_entering_market(BacktestRepository.get_kotleta(), long_current_price, quantity_long, leverage), backtest_time)
-        if USE_VIRTUAL_KOTLETA:
-            if BACKTEST_MODE:
-                BacktestRepository.set_virtual_kotleta(BacktestRepository.get_virtual_kotleta()-MathHelper.calculate_entering_market_commission(long_current_price, quantity_long), backtest_time)
-            elif ONLINE_TEST_MODE:
-                Repository.set_virtual_kotleta(Repository.get_virtual_kotleta()-MathHelper.calculate_entering_market_commission(long_current_price, quantity_long))
-        #if BACKTEST_MODE or ONLINE_TEST_MODE:   
-        #    quantity_long *= leverage
-        order_long_market = {}
-        stop_order_long = {}
-        
-        if ONLINE_TEST_MODE:
-            order_long_market = place_api_order(client=client,
-                                                symbol=coin_long,
-                                                side='BUY',
-                                                quantity=quantity_long)
-        elif PRODUCTION_MODE:
+            BacktestRepository.set_available_balance(MathHelper.calculate_balance_after_entering_market(BacktestRepository.get_available_balance(), current_price, quantity, leverage), backtest_time)
+            BacktestRepository.set_balance(BacktestRepository.get_balance()-MathHelper.calculate_entering_market_commission(current_price, quantity), backtest_time)
+       
+        market_order = {}
+        stop_order = {}
+    
+        if PRODUCTION_MODE:
             
-            order_long_market = place_api_order(client=client,
-                                                symbol=coin_long,
-                                                side='BUY',
-                                                quantity=quantity_long)
-            stop_order_long = place_api_market_stop_order(client=client,
-                                                    symbol=coin_long,
-                                                    stop_price=long_stop_price,
-                                                    side='SELL')                                    
+            market_order = place_api_order(client=client,
+                                                symbol=coin,
+                                                side=side,
+                                                quantity=quantity)
+            stop_market_side = 'BUY' if side == 'SELL' else 'SELL'
+            stop_order = place_api_market_stop_order(client=client,
+                                                    symbol=coin,
+                                                    stop_price=stop_price,
+                                                    side=stop_market_side)                                    
         elif BACKTEST_MODE:
-            fill_backtest_order_with_defaults(order_long_market)
+            fill_backtest_order_with_defaults(market_order)
 
         if BACKTEST_MODE or ONLINE_TEST_MODE:
-            order_long_market['symbol'] = coin_long
-            order_long_market['orderId'] = random.randint(1, 9999999)
-            order_long_market['status'] = 'NOT EXIST'
-            order_long_market['clientOrderId'] = 0
-            order_long_market['price'] = long_current_price
-            order_long_market['avgPrice'] = long_current_price
-            order_long_market['origQty'] = quantity_long
-            order_long_market['executedQty'] = 0
-            order_long_market['cumQuote'] = 0
-            order_long_market['timeInForce'] = 'GTC'
-            order_long_market['type'] = 'MARKET'
-            order_long_market['reduceOnly'] = '0'
-            order_long_market['closePosition'] = '0'
-            order_long_market['side'] = 'BUY'
-            order_long_market['positionSide'] = 'BOTH'
-            order_long_market['stopPrice'] = 0
-            order_long_market['workingType'] = 'CONTRACT_PRICE'
-            order_long_market['priceProtect'] = 0
-            order_long_market['origType'] = 'MARKET'
-            order_long_market['updateTime'] = int(time.time()*1000)
+            market_order['symbol'] = coin
+            market_order['orderId'] = random.randint(1, 9999999)
+            market_order['status'] = 'NOT EXIST'
+            market_order['clientOrderId'] = 0
+            market_order['price'] = current_price
+            market_order['avgPrice'] = current_price
+            market_order['origQty'] = quantity
+            market_order['executedQty'] = 0
+            market_order['cumQuote'] = 0
+            market_order['timeInForce'] = 'GTC'
+            market_order['type'] = 'MARKET'
+            market_order['reduceOnly'] = '0'
+            market_order['closePosition'] = '0'
+            market_order['side'] = 'BUY'
+            market_order['positionSide'] = 'BOTH'
+            market_order['stopPrice'] = 0
+            market_order['workingType'] = 'CONTRACT_PRICE'
+            market_order['priceProtect'] = 0
+            market_order['origType'] = 'MARKET'
+            market_order['updateTime'] = int(time.time()*1000)
         
-        order_long_market.update({'tradeId':long_order_id})
-        order_long_market.update({'hedgeId':hedgeId})
-        order_long_market.update({'leverage':leverage})
-        stop_order_long.update({'tradeId':long_order_id})
-        stop_order_long.update({'hedgeId':hedgeId})
-        stop_order_long.update({'leverage':leverage})
+        market_order.update({'tradeId':order_id})
+        market_order.update({'leverage':leverage})
+        stop_order.update({'tradeId':order_id})
+        stop_order.update({'leverage':leverage})
 
         if BACKTEST_MODE or ONLINE_TEST_MODE:
-            order_long_market.update({'lastPrice':long_current_price})
-            order_long_market.update({'currentProfit':0})
+            market_order.update({'lastPrice':current_price})
+            market_order.update({'currentProfit':0})
 
         if BACKTEST_MODE:
-            order_long_market['updateTime'] = backtest_time
-            BacktestRepository.add_order(order_long_market)
-        elif ONLINE_TEST_MODE:
-            Repository.add_test_order(order_long_market)
+            market_order['updateTime'] = backtest_time
+            BacktestRepository.add_order(market_order)
         else:
-            order_long_market['price'] = long_current_price
-            Repository.add_order(order_long_market)
-            Repository.add_order(stop_order_long)
+            market_order['price'] = current_price
+            Repository.add_order(market_order)
+            Repository.add_order(stop_order)
 
     except Exception as err: 
         if BACKTEST_MODE:
-            BacktestRepository.log_message(coin_long + str(err))    
+            BacktestRepository.log_message(coin + str(err))    
         else:
-            Repository.log_message(coin_long + str(err))    
+            Repository.log_message(coin + str(err))    
 
-    short_order_id = int(time.time() * 1000)
-    try:
-        if ONLINE_TEST_MODE:
-            Repository.set_kotleta(MathHelper.calculate_balance_after_entering_market(Repository.get_kotleta(), short_current_price, quantity_short, leverage))
-        if BACKTEST_MODE:
-            BacktestRepository.set_kotleta(MathHelper.calculate_balance_after_entering_market(BacktestRepository.get_kotleta(), short_current_price, quantity_short, leverage), backtest_time)
-        if USE_VIRTUAL_KOTLETA:
-            if BACKTEST_MODE:
-                BacktestRepository.set_virtual_kotleta(BacktestRepository.get_virtual_kotleta()-MathHelper.calculate_entering_market_commission(short_current_price, quantity_short), backtest_time)
-            elif ONLINE_TEST_MODE:
-                Repository.set_virtual_kotleta(Repository.get_virtual_kotleta()-MathHelper.calculate_entering_market_commission(short_current_price, quantity_short))
-        #if BACKTEST_MODE or ONLINE_TEST_MODE:       
-        #    quantity_short *= leverage
-        order_short_market = {}
-        stop_order_short = {}
-
-        if ONLINE_TEST_MODE:
-            order_short_market = place_api_order(client=client,
-                                                symbol=coin_short,
-                                                side='SELL',
-                                                quantity=quantity_short)
-        elif PRODUCTION_MODE:
-            order_short_market = place_api_order(client=client,
-                                                symbol=coin_short,
-                                                side='SELL',
-                                                quantity=quantity_short)
-            stop_order_short = place_api_market_stop_order(client=client,
-                                                    symbol=coin_short,
-                                                    stop_price=short_stop_price,
-                                                    side='BUY') 
-        elif BACKTEST_MODE:
-            fill_backtest_order_with_defaults(order_short_market)
-        
-        if BACKTEST_MODE or ONLINE_TEST_MODE:    
-            order_short_market['symbol'] = coin_short
-            order_short_market['orderId'] = random.randint(1, 9999999)
-            order_short_market['status'] = 'NOT EXIST'
-            order_short_market['clientOrderId'] = 0
-            order_short_market['price'] = short_current_price
-            order_short_market['avgPrice'] = short_current_price
-            order_short_market['origQty'] = quantity_short
-            order_short_market['executedQty'] = 0
-            order_short_market['cumQuote'] = 0
-            order_short_market['timeInForce'] = 'GTC'
-            order_short_market['type'] = 'MARKET'
-            order_short_market['reduceOnly'] = '0'
-            order_short_market['closePosition'] = '0'
-            order_short_market['side'] = 'SELL'
-            order_short_market['positionSide'] = 'BOTH'
-            order_short_market['stopPrice'] = 0
-            order_short_market['workingType'] = 'CONTRACT_PRICE'
-            order_short_market['priceProtect'] = 0
-            order_short_market['origType'] = 'MARKET'
-            order_short_market['updateTime'] = int(time.time()*1000)
-
-        order_short_market.update({'tradeId':short_order_id})
-        order_short_market.update({'hedgeId':hedgeId})
-        order_short_market.update({'leverage':leverage})
-        stop_order_short.update({'tradeId':short_order_id})
-        stop_order_short.update({'hedgeId':hedgeId})
-        stop_order_short.update({'leverage':leverage})
-        
-        if BACKTEST_MODE or ONLINE_TEST_MODE:
-            order_short_market.update({'lastPrice':short_current_price})
-            order_short_market.update({'currentProfit':0})
-
-
-        if BACKTEST_MODE:
-            order_short_market['updateTime'] = backtest_time
-            BacktestRepository.add_order(order_short_market)
-        elif ONLINE_TEST_MODE:
-            Repository.add_test_order(order_short_market)
-        else:
-            order_short_market['price'] = short_current_price
-            Repository.add_order(order_short_market)
-            Repository.add_order(stop_order_short)
-
-    except Exception as err: 
-        if BACKTEST_MODE:
-            BacktestRepository.log_message(coin_short + str(err))    
-        else:
-            Repository.log_message(coin_short + str(err))    
     
-    if ONLINE_TEST_MODE or PRODUCTION_MODE:
-        Repository.set_hedges_launched(Repository.get_hedges_launched()+1)
-        if Repository.get_hedges_launched() >= Repository.get_backtest_hedge_limit() and Repository.get_backtest_hedge_limit() != -1:
-            Repository.set_is_order_creation_allowed(False)
-    if BACKTEST_MODE: 
-        BacktestRepository.set_hedges_launched(BacktestRepository.get_hedges_launched()+1)
-        if BacktestRepository.get_hedges_launched() >= BacktestRepository.get_backtest_hedge_limit() and BacktestRepository.get_backtest_hedge_limit() != -1:
-            BacktestRepository.set_is_order_creation_allowed(False)      
-    pass
- 
    
 
 
@@ -1021,7 +793,7 @@ def trade_calculator_loop():
                                                                                                         triggered_price=current_price,
                                                                                                         quantity=order[orders_definition.origQty],
                                                                                                         order_type=order[orders_definition.side])
-                    Repository.add_to_virtual_kotleta(current_profit-order[orders_definition.currentProfit])
+                    Repository.add_to_balance(current_profit-order[orders_definition.currentProfit])
                     Repository.update_order_current_parameters(current_profit=current_profit,
                                                                 last_price=current_price,
                                                                 symbol=order[orders_definition.symbol])
@@ -1048,8 +820,8 @@ def trade_calculator_loop():
                 coefficients_linear_regression = (lin_reg_coef_a, lin_reg_coef_b)
                 linear_regression_bound = MathHelper.calculate_polynom(close_time, coefficients_linear_regression)  
                 price_stop_percentage = Repository.get_price_stop_percentage()
-                market1_exceed_limits = MathHelper.is_price_exceed_limit(market1[orders_definition.price], coin1_current_price, market1[orders_definition.leverage], price_stop_percentage, market1[orders_definition.side])
-                market2_exceed_limits = MathHelper.is_price_exceed_limit(market2[orders_definition.price], coin2_current_price, market2[orders_definition.leverage], price_stop_percentage, market2[orders_definition.side])
+                market_exceed_limits = MathHelper.is_price_exceeded_limit(market1[orders_definition.price], coin1_current_price, market1[orders_definition.leverage], price_stop_percentage, market1[orders_definition.side])
+                market2_exceed_limits = MathHelper.is_price_exceeded_limit(market2[orders_definition.price], coin2_current_price, market2[orders_definition.leverage], price_stop_percentage, market2[orders_definition.side])
                 use_limit_stops = stop_limit1 is not None and stop_limit2 is not None
                 coin1_limit_order = None
                 coin2_limit_order = None
@@ -1057,9 +829,9 @@ def trade_calculator_loop():
                     coin2_limit_order = [o for o in get_all_account_orders(client=client, symbol=coin2)if o['clientOrderId'] == stop_limit2[orders_definition.clientOrderId]][0]
                     coin1_limit_order = [o for o in get_all_account_orders(client=client, symbol=coin1)if o['clientOrderId'] == stop_limit1[orders_definition.clientOrderId]][0]
 
-                if close_time - market1[orders_definition.updateTime] > interval_to_time(ConfigManager.config['min_reversion_stop_time']) * 1000:
+                if close_time - market1[orders_definition.updateTime] > interval_to_time(ConfigManager.config['order_stop_limit_time']) * 1000:
                     #close trades via market and exit
-                    close_market_orders(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'TIME_STOP', pair)
+                    close_market_order(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'TIME_STOP', pair)
                     continue
                 
                 if use_limit_stops and (coin1_limit_order['executedQty'] != '0' or coin2_limit_order['executedQty'] != '0'):
@@ -1079,16 +851,16 @@ def trade_calculator_loop():
                         coin2_status = 'FILLED'
 
                     pass
-                    close_market_orders(((market1, coin1_current_price, coin1_limit_order, coin1_status), (market2, coin2_current_price, coin2_limit_order, coin2_status)), close_time, 'PRICE_STOP_LIMIT_EXCEED', pair)
-                    Repository.log_message(f"Pair {market1[orders_definition.symbol]}/{market2[orders_definition.symbol]} exceed price stop limit with {market1[orders_definition.symbol]}: {market1_exceed_limits[1]} and {market2[orders_definition.symbol]}: {market2_exceed_limits[1]}. HedgeId: {market1[orders_definition.hedgeId]}")
+                    close_market_order(((market1, coin1_current_price, coin1_limit_order, coin1_status), (market2, coin2_current_price, coin2_limit_order, coin2_status)), close_time, 'PRICE_STOP_LIMIT_EXCEEDED', pair)
+                    Repository.log_message(f"Pair {market1[orders_definition.symbol]}/{market2[orders_definition.symbol]} exceed price stop limit with {market1[orders_definition.symbol]}: {market_exceed_limits[1]} and {market2[orders_definition.symbol]}: {market2_exceed_limits[1]}. HedgeId: {market1[orders_definition.hedgeId]}")
                 elif is_program_shutdown_started:
                     print('SHUTDOWN CLOSING')
-                    close_market_orders(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'PROGRAM_CLOSING', pair)  
+                    close_market_order(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'PROGRAM_CLOSURE', pair)  
                 
-                elif not use_limit_stops and (market1_exceed_limits[0] or market2_exceed_limits[0]):
+                elif not use_limit_stops and (market_exceed_limits[0] or market2_exceed_limits[0]):
                     print('CLOSING WHEN USING NO LIMITS')
-                    close_market_orders(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'PRICE_STOP_LIMIT_EXCEED', pair)
-                    Repository.log_message(f"Pair {market1[orders_definition.symbol]}/{market2[orders_definition.symbol]} exceed price stop limit with {market1[orders_definition.symbol]}: {market1_exceed_limits[1]} and {market2[orders_definition.symbol]}: {market2_exceed_limits[1]}. HedgeId: {market1[orders_definition.hedgeId]}")
+                    close_market_order(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'PRICE_STOP_LIMIT_EXCEEDED', pair)
+                    Repository.log_message(f"Pair {market1[orders_definition.symbol]}/{market2[orders_definition.symbol]} exceed price stop limit with {market1[orders_definition.symbol]}: {market_exceed_limits[1]} and {market2[orders_definition.symbol]}: {market2_exceed_limits[1]}. HedgeId: {market1[orders_definition.hedgeId]}")
                 #up: 1 short(sell), 2 long(buy)
                 #down: 1 long(buy), 2 short(sell)
                 #we entered when crossed upper deviation bound
@@ -1096,13 +868,13 @@ def trade_calculator_loop():
                     #close markets if relation price is lower than linear regression bound
                     if current_relation_price <= linear_regression_bound:
                         print('REGRESSION')
-                        close_market_orders(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'LINEAR_REGRESSION_CROSSING', pair)
+                        close_market_order(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'LINEAR_REGRESSION_CROSSING', pair)
                 #we entered when crossed lower deviation bound
                 elif market1[orders_definition.side] == 'BUY':
                     #close markets if relation price is higher than linear regression bound
                     if current_relation_price >= linear_regression_bound:
                         print('REGRESSION')
-                        close_market_orders(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'LINEAR_REGRESSION_CROSSING', pair)
+                        close_market_order(((market1, coin1_current_price, coin1_limit_order, 'NORMAL'), (market2, coin2_current_price, coin2_limit_order, 'NORMAL')), close_time, 'LINEAR_REGRESSION_CROSSING', pair)
                 
         except Exception as err: 
             Repository.log_message(str(err))    
@@ -1120,8 +892,8 @@ def pair_loop():
     #Repository.set_pairs_default_is_outside_deviation()
     if PRODUCTION_MODE:
         balance = get_production_balance(client)
-        Repository.set_kotleta(balance['available_balance'])
-        Repository.set_virtual_kotleta(balance['balance'])
+        Repository.set_available_balance(balance['available_balance'])
+        Repository.set_balance(balance['balance'])
     while True:
         start_time = time.time()
         pairs = Repository.get_pairs() 
@@ -1172,8 +944,8 @@ def pair_loop():
 
                     #update kotleta values
                     if ONLINE_TEST_MODE:
-                        kotleta = Repository.get_virtual_kotleta() if USE_VIRTUAL_KOTLETA else Repository.get_kotleta()
-                        if Repository.get_kotleta() < kotleta * 0.15:
+                        kotleta = Repository.get_balance() if USE_VIRTUAL_KOTLETA else Repository.get_available_balance()
+                        if Repository.get_available_balance() < kotleta * 0.15:
                             continue
                     else:
                         balance = get_production_balance(client)
@@ -1216,21 +988,21 @@ def pair_loop():
                                                                                 stop_percentage=stop_percentage,
                                                                                 leverage=leverage,
                                                                                 side='SELL')                                    
-                        long_quantity = MathHelper.calculate_min_reversion_quantity(
+                        long_quantity = MathHelper.calculate_quantity(
                                                                       total=kotleta,
                                                                       entry_price=coin2_price,
                                                                       precision=coin2_info[2],
                                                                       minimum_notion=coin2_info[3],
                                                                       maximum_notion=coin2_max_notional,
                                                                       leverage=leverage)
-                        short_quantity = MathHelper.calculate_min_reversion_quantity(
+                        short_quantity = MathHelper.calculate_quantity(
                                                                       total=kotleta,
                                                                       entry_price=coin1_price,
                                                                       precision=coin1_info[2],
                                                                       minimum_notion=coin1_info[3],
                                                                       maximum_notion=coin1_max_notional,
                                                                       leverage=leverage)
-                        place_hedge_order(coin_long=coin2, quantity_long=long_quantity, long_current_price=coin2_price, long_stop_price=long_stop_price,
+                        manage_market_order_creation(coin_long=coin2, quantity_long=long_quantity, long_current_price=coin2_price, long_stop_price=long_stop_price,
                                           coin_short=coin1, quantity_short=short_quantity, short_current_price=coin1_price, short_stop_price=short_stop_price, leverage=leverage)  
                         pass
                     else:
@@ -1244,7 +1016,7 @@ def pair_loop():
                                                                                 stop_percentage=stop_percentage,
                                                                                 leverage=leverage,
                                                                                 side='SELL')   
-                        long_quantity = MathHelper.calculate_min_reversion_quantity(
+                        long_quantity = MathHelper.calculate_quantity(
                                                                       total=kotleta,
                                                                       entry_price=coin1_price,
                                                                       precision=coin1_info[2],
@@ -1252,21 +1024,21 @@ def pair_loop():
                                                                       maximum_notion=coin1_max_notional,
                                                                       leverage=leverage)
 
-                        short_quantity = MathHelper.calculate_min_reversion_quantity(
+                        short_quantity = MathHelper.calculate_quantity(
                                                                       total=kotleta,
                                                                       entry_price=coin2_price,
                                                                       precision=coin2_info[2],
                                                                       minimum_notion=coin2_info[3],
                                                                       maximum_notion=coin1_max_notional,
                                                                       leverage=leverage)
-                        place_hedge_order(coin_long=coin1, quantity_long=long_quantity, long_current_price=coin1_price, long_stop_price=long_stop_price,
+                        manage_market_order_creation(coin_long=coin1, quantity_long=long_quantity, long_current_price=coin1_price, long_stop_price=long_stop_price,
                                           coin_short=coin2, quantity_short=short_quantity, short_current_price=coin2_price, short_stop_price=short_stop_price, leverage=leverage) 
                         pass
                     if PRODUCTION_MODE:
                         balance = get_production_balance(client)
-                        Repository.set_kotleta(balance['available_balance'])
+                        Repository.set_available_balance(balance['available_balance'])
                         if USE_VIRTUAL_KOTLETA:
-                            Repository.set_virtual_kotleta(balance['balance'])
+                            Repository.set_balance(balance['balance'])
                     #print('Exit due to orders placement|Time elapsed: {0}'.format(time.time() - pair_start_time)) 
                     continue
                 pass
@@ -1522,8 +1294,8 @@ def seed_currencies():
 
 if __name__ == '__main__':
     #update_currencies() 
-    BacktestRepository.Execute("DELETE FROM klines_1m;")
-    seed_backtest_klines()
+    #BacktestRepository.Execute("DELETE FROM klines_1m;")
+    #seed_backtest_klines()
     run_backtest()  
     manage_backtest_cointegrations()
     #check_cointgrations()

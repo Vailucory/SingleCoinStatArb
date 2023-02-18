@@ -169,11 +169,11 @@ class BacktestRepository:
                     raise err     
     
     @staticmethod
-    def get_virtual_balance_history():
-        return BacktestRepository.ExecuteWithResult("SELECT * FROM virtual_balance_history")
-    @staticmethod
     def get_balance_history():
         return BacktestRepository.ExecuteWithResult("SELECT * FROM balance_history")
+    @staticmethod
+    def get_available_balance_history():
+        return BacktestRepository.ExecuteWithResult("SELECT * FROM available_balance_history")
     @staticmethod
     def get_all_currencies():
         return BacktestRepository.ExecuteWithResult("SELECT * FROM currencies")
@@ -228,38 +228,33 @@ class BacktestRepository:
 
     pass
     @staticmethod
-    def get_virtual_kotleta():
-        return double(BacktestRepository.get_variable('virtual_kotleta'))
+    def get_balance():
+        return double(BacktestRepository.get_variable('balance'))
     @staticmethod    
-    def set_virtual_kotleta(value, time = int(time.time()*1000)):
-        BacktestRepository.update_variable('virtual_kotleta', value)
-        BacktestRepository.add_virtual_balance_snapshot(value, time)
+    def set_balance(value, time = int(time.time()*1000)):
+        BacktestRepository.update_variable('balance', value)
+        BacktestRepository.add_balance_snapshot(value, time)
     @staticmethod
-    def add_to_virtual_kotleta(value, time = int(time.time()*1000)):
-        BacktestRepository.Execute(f"UPDATE variables SET value=value+{value} WHERE name == 'virtual_kotleta'")
-        BacktestRepository.add_virtual_balance_snapshot(BacktestRepository.get_virtual_kotleta(), time)
-
+    def add_to_balance(value, time = int(time.time()*1000)):
+        BacktestRepository.Execute(f"UPDATE variables SET value=value+{value} WHERE name == 'balance'")
+        BacktestRepository.add_balance_snapshot(BacktestRepository.get_balance(), time)
     @staticmethod
-    def add_virtual_balance_snapshot(balance, time):
-        BacktestRepository.Execute("INSERT INTO virtual_balance_history(balance, change_time) VALUES(?,?)", (balance, time))
-
+    def add_balance_snapshot(balance, time):
+        BacktestRepository.Execute("INSERT INTO balance_history(balance, change_time) VALUES(?,?)", (balance, time))
     @staticmethod
-    def get_kotleta():
-        return double(BacktestRepository.get_variable('kotleta'))
+    def get_available_balance():
+        return double(BacktestRepository.get_variable('available_balance'))
     @staticmethod    
-    def set_kotleta(value, time):
-        BacktestRepository.update_variable('kotleta', value)
-        BacktestRepository.add_balance_snapshot(value, time)      
+    def set_available_balance(value, time):
+        BacktestRepository.update_variable('available_balance', value)
+        BacktestRepository.add_available_balance_snapshot(value, time)      
     @staticmethod    
-    def add_to_kotleta(value, time):
-        BacktestRepository.Execute("UPDATE variables SET value=value+? WHERE name == 'kotleta'", (value,))
-        BacktestRepository.add_balance_snapshot(BacktestRepository.get_kotleta(), time)  
+    def add_to_available_balance(value, time):
+        BacktestRepository.Execute("UPDATE variables SET value=value+? WHERE name == 'available_balance'", (value,))
+        BacktestRepository.add_available_balance_snapshot(BacktestRepository.get_available_balance(), time)  
     @staticmethod
-    def get_backtest_hedge_limit():
-        return int(BacktestRepository.get_variable('backtest_hedge_limit'))
-    @staticmethod    
-    def set_backtest_hedge_limit(value):
-        BacktestRepository.update_variable('backtest_hedge_limit', value)
+    def add_available_balance_snapshot(balance, time = int(time.time()*1000)):
+        BacktestRepository.Execute("INSERT INTO available_balance_history(balance,change_time) VALUES(?,?)", (balance, time))
     @staticmethod
     def get_is_order_creation_allowed():
         return int(BacktestRepository.get_variable('is_order_creation_allowed'))
@@ -276,28 +271,12 @@ class BacktestRepository:
     def set_is_program_shutdown_started(value):
         BacktestRepository.update_variable('is_program_shutdown_started', value)  
     @staticmethod
-    def get_hedges_launched():
-        return int(BacktestRepository.get_variable('hedges_launched'))
-    @staticmethod    
-    def set_hedges_launched(value):
-        BacktestRepository.update_variable('hedges_launched', value) 
-    @staticmethod  
-    def get_burst_starting_balance():
-        return BacktestRepository.get_variable('burst_starting_balance')
-    @staticmethod    
-    def set_burst_starting_balance(value):
-        if value is None:
-            value = 'NULL'
-        BacktestRepository.update_variable('burst_starting_balance', value)   
-    @staticmethod
     def get_variable(name):
         return BacktestRepository.ExecuteWithResult(f"SELECT value FROM variables WHERE name == '{name}'")[0][0]
     @staticmethod
     def update_variable(name, value):
         BacktestRepository.Execute(f"UPDATE variables SET value = {value} WHERE name == '{name}'")
-    @staticmethod
-    def add_balance_snapshot(balance, time = int(time.time()*1000)):
-        BacktestRepository.Execute("INSERT INTO balance_history(balance,change_time) VALUES(?,?)", (balance, time))
+    
 
     @staticmethod
     def seed_database():
@@ -306,33 +285,19 @@ class BacktestRepository:
         BacktestRepository.Execute("DELETE FROM backtest_results")
         BacktestRepository.Execute("DELETE FROM orders_archive")  
         BacktestRepository.Execute("DELETE FROM balance_history")   
-        BacktestRepository.Execute("DELETE FROM virtual_balance_history")  
+        BacktestRepository.Execute("DELETE FROM available_balance_history")  
         #BacktestRepository.Execute("INSERT OR IGNORE INTO variables VALUES('is_program_shutdown_started', 0)") 
-        BacktestRepository.set_kotleta(9.25382, 0)
-        BacktestRepository.set_virtual_kotleta(9.25382, 0)
-        BacktestRepository.set_backtest_hedge_limit(-1)
+        BacktestRepository.set_available_balance(9.25382, 0)
+        BacktestRepository.set_balance(9.25382, 0)
         BacktestRepository.set_is_order_creation_allowed(True)
         BacktestRepository.set_is_program_shutdown_started(False)
-        BacktestRepository.set_hedges_launched(0)
+
 
     @staticmethod
-    def delete_uncointegrated_pairs():
-        coins_with_active_orders = BacktestRepository.get_coins_with_open_orders_by_hedges()
-        command = "DELETE FROM active_pairs WHERE failed_cointegrations > 10"
-        for coin1, coin2 in coins_with_active_orders:
-            command += f" AND pair != '{coin1}/{coin2}'"
-        BacktestRepository.Execute(command) 
-    @staticmethod
-    def delete_pair(pair:str):
-        BacktestRepository.Execute("DELETE FROM active_pairs WHERE pair == ? AND adf > ?", [pair, ConfigManager.config['adf_value_threshold']]) 
-    @staticmethod
-    #dict[str:tuple[float, float]]
-    def get_cointegrations(time:int):
-        querry_result = BacktestRepository.ExecuteWithResult(f"""SELECT pair, adf, eg, deviation, lin_reg_coef_a, lin_reg_coef_b, hurst_exponent, time 
-                                                                FROM cointegrations 
-                                                                INNER JOIN pairs ON pairs.id = cointegrations.pairId 
-                                                                WHERE cointegrations.time == {time}
-                                                                ORDER BY pairId, time""")
+    def get_preloaded_symbols_info(time:int):
+        querry_result = BacktestRepository.ExecuteWithResult(f"""SELECT symbol, deviation, lin_reg_coef_a, lin_reg_coef_b, hurst_exponent, time 
+                                                                FROM preloaded_symbols_info 
+                                                                WHERE cointegrations.time == {time}""")
         return querry_result
 
 
@@ -342,7 +307,7 @@ class BacktestRepository:
         return list([r[0] for r in querry_result])
 
     @staticmethod
-    def add_active_pairs(pairs:list):
+    def add_active_symbols(pairs:list):
         pairs_to_import = []
         #pair, adf, eg, deviation, lin_reg_coef_a, lin_reg_coef_b, time
         for pair in pairs:
@@ -360,7 +325,7 @@ class BacktestRepository:
 
 
     @staticmethod
-    def update_active_pairs(pairs:list):
+    def update_symbols(pairs:list):
         pairs_to_import = []
         #pair, adf, eg, deviation, lin_reg_coef_a, lin_reg_coef_b, time
         for pair in pairs:
@@ -404,8 +369,8 @@ class BacktestRepository:
         BacktestRepository.Execute("INSERT INTO orders_archive(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,hedgeId,leverage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", order)
 
     @staticmethod
-    def get_active_pairs():
-        return BacktestRepository.ExecuteWithResult("SELECT * FROM active_pairs ORDER BY adf")
+    def get_active_symbols():
+        return BacktestRepository.ExecuteWithResult("SELECT * FROM symbols")
 
 
     @staticmethod
@@ -413,8 +378,8 @@ class BacktestRepository:
         querry_result = BacktestRepository.ExecuteWithResult(f"SELECT * FROM orders WHERE symbol == '{symbol.upper()}'")
         return len(querry_result) > 0    
     @staticmethod
-    def update_pair_is_outside_deviations(pair, is_outside_deviations):
-        BacktestRepository.Execute(f"UPDATE active_pairs SET is_outside_deviations = {is_outside_deviations} WHERE pair LIKE '%{pair}%'")   
+    def update_symbol_is_outside_deviation(symbol, is_outside_deviation):
+        BacktestRepository.Execute(f"UPDATE symbols SET is_outside_deviation = {is_outside_deviation} WHERE symbol == '{symbol}'")   
     @staticmethod
     def get_currency(symbol):
         return BacktestRepository.ExecuteWithResult(f"SELECT * FROM currencies WHERE symbol == '{symbol}'")[0]
@@ -443,8 +408,8 @@ class BacktestRepository:
 
     @staticmethod
     def add_order(order):
-        BacktestRepository.Execute("""INSERT INTO orders(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,hedgeId,leverage,lastPrice,currentProfit)
-                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (order['orderId'], 
+        BacktestRepository.Execute("""INSERT INTO orders(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,leverage,lastPrice,currentProfit)
+                                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (order['orderId'], 
                                                          order['symbol'], 
                                                          order['status'], 
                                                          order['clientOrderId'], 
@@ -465,7 +430,6 @@ class BacktestRepository:
                                                          order['origType'], 
                                                          order['updateTime'],
                                                          order['tradeId'],
-                                                         order['hedgeId'],
                                                          order['leverage'],
                                                          order['lastPrice'],
                                                          order['currentProfit']))
@@ -499,8 +463,8 @@ class BacktestRepository:
         return BacktestRepository.ExecuteWithResult("SELECT MAX(close_time) FROM klines_1m")[0][0]
 
     @staticmethod
-    def get_pair_by_coins(coin1:str, coin2:str):
-        return BacktestRepository.ExecuteWithResult(f"SELECT pair, deviation, lin_reg_coef_a, lin_reg_coef_b FROM active_pairs WHERE pair LIKE '%{coin1}%' AND pair LIKE '%{coin2}%'")[0]
+    def get_symbol_info(symbol:str):
+        return BacktestRepository.ExecuteWithResult(f"SELECT deviation, lin_reg_coef_a, lin_reg_coef_b FROM active_pairs WHERE symbol == '{symbol}'")[0]
     
     @staticmethod
     def get_coins_with_open_orders_by_hedges():
@@ -625,16 +589,16 @@ class Repository:
         Repository.Execute("DELETE FROM cointegrations")    
         Repository.Execute("DELETE FROM pairs") 
         Repository.Execute("DELETE FROM trades") 
-        Repository.Execute("DELETE FROM balance_history") 
-        Repository.Execute("DELETE FROM virtual_balance_history")     
+        Repository.Execute("DELETE FROM available_balance_history") 
+        Repository.Execute("DELETE FROM balance_history")     
         Repository.Execute("DROP TABLE orders") 
         if ONLINE_TEST_MODE:
             if Repository.CURRENT_DATABASE == Repository.SQLITE:
                 Repository.Execute("""CREATE TABLE "orders"("orderId"	INTEGER,"symbol"	TEXT,"status"	TEXT,"clientOrderId"	TEXT,"price"	REAL,"avgPrice"	REAL,"origQty"	REAL,"executedQty"	REAL,"cumQuote"	REAL,"timeInForce"	TEXT,"type"	TEXT,"reduceOnly"	INTEGER,"closePosition"	INTEGER,"side"	TEXT,"positionSide"	TEXT,"stopPrice"	REAL,"workingType"	TEXT,"priceProtect"	INTEGER,"origType"	TEXT,"updateTime"	INTEGER,"tradeId"	INTEGER,"hedgeId"	INTEGER,"leverage"	INTEGER,"lastPrice"	REAL,"currentProfit"	REAL);""")     
             elif Repository.CURRENT_DATABASE == Repository.MYSQL:
                 Repository.Execute("""CREATE TABLE orders (orderId BIGINT,symbol VARCHAR(20), status VARCHAR(32), clientOrderId VARCHAR(64),price REAL,avgPrice REAL,origQty REAL,executedQty REAL,cumQuote REAL,timeInForce VARCHAR(10),type VARCHAR(20),reduceOnly INTEGER,closePosition INTEGER,side VARCHAR(10),positionSide VARCHAR(10),stopPrice REAL,workingType VARCHAR(32),priceProtect INTEGER,origType VARCHAR(20),updateTime BIGINT,tradeId BIGINT,hedgeId BIGINT,leverage INTEGER,lastPrice REAL,currentProfit REAL)ENGINE=INNODB;""")
-            Repository.set_kotleta(1000.0)
-            Repository.set_virtual_kotleta(1000.0)
+            Repository.set_available_balance(1000.0)
+            Repository.set_balance(1000.0)
         else:
             if Repository.CURRENT_DATABASE == Repository.SQLITE:
                 Repository.Execute("""CREATE TABLE "orders"("orderId"	INTEGER,"symbol"	TEXT,"status"	TEXT,"clientOrderId"	TEXT,"price"	REAL,"avgPrice"	REAL,"origQty"	REAL,"executedQty"	REAL,"cumQuote"	REAL,"timeInForce"	TEXT,"type"	TEXT,"reduceOnly"	INTEGER,"closePosition"	INTEGER,"side"	TEXT,"positionSide"	TEXT,"stopPrice"	REAL,"workingType"	TEXT,"priceProtect"	INTEGER,"origType"	TEXT,"updateTime"	INTEGER,"tradeId"	INTEGER,"hedgeId"	INTEGER,"leverage"	INTEGER);""")      
@@ -652,22 +616,22 @@ class Repository:
 
 
     @staticmethod
-    def get_kotleta():
-        return double(Repository.get_variable('kotleta'))
+    def get_available_balance():
+        return double(Repository.get_variable('available_balance'))
     @staticmethod    
-    def set_kotleta(value):
-        Repository.update_variable('kotleta', value)
-        Repository.add_balance_snapshot(value)    
+    def set_available_balance(value):
+        Repository.update_variable('available_balance', value)
+        Repository.add_available_balance_snapshot(value)    
     @staticmethod    
-    def set_virtual_kotleta(value):
-        Repository.update_variable('virtual_kotleta', value)
-        Repository.add_virtual_balance_snapshot(value)        
+    def set_balance(value):
+        Repository.update_variable('balance', value)
+        Repository.add_balance_snapshot(value)        
     @staticmethod
-    def get_virtual_kotleta():
-        return double(Repository.get_variable('virtual_kotleta'))
+    def get_balance():
+        return double(Repository.get_variable('balance'))
     @staticmethod
-    def add_to_virtual_kotleta(value):
-        Repository.set_virtual_kotleta(Repository.get_virtual_kotleta()+value)
+    def add_to_balance(value):
+        Repository.set_balance(Repository.get_balance()+value)
 
     @staticmethod
     def get_backtest_hedge_limit():
@@ -690,12 +654,7 @@ class Repository:
     @staticmethod    
     def set_is_program_shutdown_started(value):
         Repository.update_variable('is_program_shutdown_started', value)  
-    @staticmethod
-    def get_hedges_launched():
-        return int(Repository.get_variable('hedges_launched'))
-    @staticmethod    
-    def set_hedges_launched(value):
-        Repository.update_variable('hedges_launched', value)  
+
     @staticmethod
     def get_variable(name):
         return Repository.ExecuteWithResult(f"SELECT value FROM variables WHERE name == '{name}'")[0][0]  
@@ -703,11 +662,11 @@ class Repository:
     def update_variable(name, value):
         Repository.Execute(f"UPDATE variables SET value = {value} WHERE name == '{name}'")
     @staticmethod
+    def add_available_balance_snapshot(balance):
+        Repository.Execute("INSERT INTO available_balance_history VALUES(?,?)", (balance, int(time.time()*1000)))
+    @staticmethod
     def add_balance_snapshot(balance):
         Repository.Execute("INSERT INTO balance_history VALUES(?,?)", (balance, int(time.time()*1000)))
-    @staticmethod
-    def add_virtual_balance_snapshot(balance):
-        Repository.Execute("INSERT INTO virtual_balance_history VALUES(?,?)", (balance, int(time.time()*1000)))
 
     @staticmethod
     def add_pairs(pairs_to_import):
@@ -745,13 +704,7 @@ class Repository:
     @staticmethod
     def get_pair(pair):
         return Repository.ExecuteWithResult(f"SELECT pair,deviation,lin_reg_coef_a, lin_reg_coef_b FROM pairs WHERE pair == '{pair}'")[0]
-    @staticmethod
-    def delete_pair(pair):
-        Repository.Execute("DELETE FROM pairs WHERE pair == ? AND adf > ?", [pair, ConfigManager.config['adf_value_threshold']])
 
-
-
-        Repository.db.commit()
 
     #Returns None if no last cointegration
     @staticmethod
@@ -966,11 +919,11 @@ class Repository:
     def get_pair_by_coins(coin1, coin2):
         return Repository.ExecuteWithResult(f"SELECT pair, lin_reg_coef_a, lin_reg_coef_b FROM pairs WHERE pair LIKE '%{coin1}%' AND pair LIKE '%{coin2}%' ")[0]
     @staticmethod
-    def get_virtual_balance_history():
-        return Repository.ExecuteWithResult("SELECT * FROM virtual_balance_history")
-    @staticmethod
     def get_balance_history():
         return Repository.ExecuteWithResult("SELECT * FROM balance_history")
+    @staticmethod
+    def get_available_balance_history():
+        return Repository.ExecuteWithResult("SELECT * FROM available_balance_history")
 
 def get_currencies_querry():
     querry = """INSERT INTO currencies(symbol,price_precision,quantity_precision,minimum_notional,tick_size,leverage) VALUES"""
@@ -989,6 +942,5 @@ def get_pairs_querry():
     return querry
 
 if __name__ == '__main__':
-    BacktestRepository.Execute("DELETE FROM cointegrations;")
-    BacktestRepository.Execute("VACUUM;")
+    
     pass
