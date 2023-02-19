@@ -99,10 +99,12 @@ def close_market_order(market, current_price, exit_time, type, limit_order=None,
         BacktestRepository.add_backtest_result(symbol=market[orders_definition.symbol],
                                     triggered_order_type=type,
                                     profit=profit-MathHelper.calculate_entering_market_commission(enter_price=market[orders_definition.price], quantity=market[orders_definition.origQty]),
-                                    exit_time=exit_time,
+                                    enter_price=market[orders_definition.price],
+                                    exit_price=current_price,
+                                    quantity=market[orders_definition.origQty],
                                     enter_time=market[orders_definition.updateTime],
-                                    tradeId=market[orders_definition.tradeId],
-                                    hedgeId=market[orders_definition.hedgeId])
+                                    exit_time=exit_time,
+                                    tradeId=market[orders_definition.tradeId])
         BacktestRepository.remove_orders(market[orders_definition.symbol])
         #we need to discard last two fields
         BacktestRepository.archive_order(market[:orders_definition.lastPrice])
@@ -120,7 +122,6 @@ def close_market_order(market, current_price, exit_time, type, limit_order=None,
                                     enter_time=market[orders_definition.updateTime],
                                     exit_time=exit_time,
                                     tradeId=market[orders_definition.tradeId],
-                                    hedgeId=market[orders_definition.hedgeId],
                                     leverage=market[orders_definition.leverage])
         Repository.remove_orders(market[orders_definition.symbol])
         #we need to discard 2 last fields

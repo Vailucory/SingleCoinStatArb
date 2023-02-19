@@ -143,7 +143,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
     add_update_backtest_symbols(preloaded_symbols_info)
     klines_1m = BacktestRepository.get_backtest_klines1m(start_time, end_time)
     keys = list(klines_1m.keys())
-    symbol = 0
+    symbol_index = 0
     high = 1
     low = 2
     close = 3
@@ -154,7 +154,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
         coins_with_active_orders = BacktestRepository.get_coins_with_open_orders()
 
         klines_with_active_orders = {}
-        [klines_with_active_orders.update({k[symbol]:k}) for k in klines if coins_with_active_orders.__contains__(k[symbol])]
+        [klines_with_active_orders.update({k[symbol_index]:k}) for k in klines if coins_with_active_orders.__contains__(k[symbol_index])]
         
         for order in BacktestRepository.get_all_orders():
             current_price = klines_with_active_orders[order[orders_definition.symbol]][close]
@@ -210,7 +210,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
         active_symbols = BacktestRepository.get_active_symbols() 
 
         active_symbols_klines = {}
-        [active_symbols_klines.update({k[symbol]:k}) for k in klines if [symbol[0] for symbol in active_symbols].__contains__(k[symbol])]
+        [active_symbols_klines.update({k[symbol_index]:k}) for k in klines if [symbol[0] for symbol in active_symbols].__contains__(k[symbol_index])]
         for symbol_info in active_symbols:
 
             symbol = symbol_info[0]
@@ -298,7 +298,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
     pass
 
 def run_backtest():
-    #BacktestRepository.seed_database()
+    BacktestRepository.seed_database()
     close_times = BacktestRepository.get_backtest_klines1h_times()
     bar_count = ConfigManager.config['bar_count']
     interval = IntervalConverter.interval_to_time(ConfigManager.config['kline_interval']) * 1000
@@ -345,6 +345,6 @@ def split(a:list, n:int):
 
 
 if __name__ == '__main__':
-    manage_symbols_preloaded_data()
+    #manage_symbols_preloaded_data()
     run_backtest()
     pass

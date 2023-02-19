@@ -33,10 +33,9 @@ class orders_definition:
     origType = 18
     updateTime = 19
     tradeId = 20
-    hedgeId = 21
-    leverage = 22
-    lastPrice =	23
-    currentProfit = 24
+    leverage = 21
+    lastPrice =	22
+    currentProfit = 23
 
 @static_init
 class BacktestRepository:
@@ -208,6 +207,7 @@ class BacktestRepository:
     def seed_database():
         BacktestRepository.Execute("DELETE FROM logs")  
         BacktestRepository.Execute("DELETE FROM orders")    
+        BacktestRepository.Execute("DELETE FROM symbols")    
         BacktestRepository.Execute("DELETE FROM backtest_results")
         BacktestRepository.Execute("DELETE FROM orders_archive")  
         BacktestRepository.Execute("DELETE FROM balance_history")   
@@ -223,7 +223,7 @@ class BacktestRepository:
     def get_preloaded_symbols_info(time:int):
         querry_result = BacktestRepository.ExecuteWithResult(f"""SELECT symbol, deviation, lin_reg_coef_a, lin_reg_coef_b, hurst_exponent, time 
                                                                 FROM preloaded_symbols_info 
-                                                                WHERE cointegrations.time == {time}""")
+                                                                WHERE preloaded_symbols_info.time == {time}""")
         return querry_result
 
 
@@ -233,41 +233,36 @@ class BacktestRepository:
         return list([r[0] for r in querry_result])
 
     @staticmethod
-    def add_active_symbols(pairs:list):
-        pairs_to_import = []
+    def add_active_symbols(symbols:list):
+        symbols_to_import = []
         #pair, adf, eg, deviation, lin_reg_coef_a, lin_reg_coef_b, time
-        for pair in pairs:
-            pairs_to_import.append((pair[0],   #pair
-                                    pair[1],   #adf
-                                    #pair[2],   #EG
-                                    0,         #failed cointegrations
+        for symbol in symbols:
+            symbols_to_import.append((symbol[0],   #symbol
                                     0,         #is outside deviation
-                                    pair[3],   #deviation
-                                    pair[4],   #lin_reg_coef_a
-                                    pair[5],   #lin_reg_coef_b
-                                    #pair[6],   #hurst_exponent
-                                    pair[7]))  #time
-        BacktestRepository.ExecuteMany("INSERT OR IGNORE INTO active_pairs(pair,adf,failed_cointegrations,is_outside_deviations,deviation,lin_reg_coef_a,lin_reg_coef_b,last_updated) VALUES(?,?,?,?,?,?,?,?)", pairs_to_import)
+                                    symbol[1],   #deviation
+                                    symbol[2],   #lin_reg_coef_a
+                                    symbol[3],   #lin_reg_coef_b
+                                    symbol[4],   #hurst_exponent
+                                    symbol[5]))  #time
+        BacktestRepository.ExecuteMany("INSERT OR IGNORE INTO symbols(symbol,is_outside_deviation,deviation,lin_reg_coef_a,lin_reg_coef_b,hurst_exponent,last_updated) VALUES(?,?,?,?,?,?,?)", symbols_to_import)
 
 
     @staticmethod
-    def update_symbols(pairs:list):
-        pairs_to_import = []
+    def update_symbols(symbols:list):
+        symbols_to_import = []
         #pair, adf, eg, deviation, lin_reg_coef_a, lin_reg_coef_b, time
-        for pair in pairs:
-            pairs_to_import.append((
-                                    pair[1],  #adf | pair[2] - EG
-                                    (0,1)[pair[1] > ConfigManager.config['adf_value_threshold'] or pair[2] > ConfigManager.config['adf_value_threshold']],  #failed_cointegrations
-                                    pair[3],  #deviation
-                                    pair[4],  #a
-                                    pair[5],  #b
-                                    #pair[6],   #hurst_exponent
-                                    pair[7],  #time
-                                    pair[0])) #pair
+        for symbol in symbols:
+            symbols_to_import.append((
+                                    symbol[1],  #deviation
+                                    symbol[2],  #a
+                                    symbol[3],  #b
+                                    symbol[4],  #hurst_exponent
+                                    symbol[5],  #time
+                                    symbol[0])) #pair
         BacktestRepository.ExecuteMany("""
-                        UPDATE active_pairs 
-                        SET adf=?, failed_cointegrations=failed_cointegrations+?, deviation=?, lin_reg_coef_a=?, lin_reg_coef_b=?, last_updated=?
-                        WHERE pair == ?""", pairs_to_import)
+                        UPDATE symbols 
+                        SET deviation=?, lin_reg_coef_a=?, lin_reg_coef_b=?, hurst_exponent=?, last_updated=?
+                        WHERE symbol == ?""", symbols_to_import)
 
     @staticmethod
     def get_coins_with_open_orders():
@@ -283,8 +278,9 @@ class BacktestRepository:
         hedgeId = querry_result[0][0]
         return BacktestRepository.ExecuteWithResult(f"SELECT * FROM orders WHERE hedgeId == {hedgeId} AND type == 'MARKET'")
     @staticmethod
-    def add_backtest_result(symbol, triggered_order_type, profit, exit_time, enter_time, tradeId, hedgeId):
-        BacktestRepository.Execute("INSERT INTO backtest_results(symbol,triggered_order_type,profit,exit_time,enter_time,tradeId,hedgeId) VALUES(?,?,?,?,?,?,?)", (symbol, triggered_order_type, profit, exit_time, enter_time, tradeId, hedgeId) )
+    def add_backtest_result(symbol, triggered_order_type, profit, enter_price, exit_price, quantity, enter_time, exit_time, tradeId):
+        BacktestRepository.Execute("INSERT INTO backtest_results(symbol,triggered_order_type,profit,enter_price, exit_price, quantity,enter_time,exit_time,tradeId) VALUES(?,?,?,?,?,?,?,?,?)",
+                                    (symbol, triggered_order_type, profit, enter_price, exit_price, quantity, enter_time, exit_time, tradeId) )
 
     @staticmethod
     def remove_orders(symbol):
@@ -292,7 +288,7 @@ class BacktestRepository:
 
     @staticmethod
     def archive_order(order):
-        BacktestRepository.Execute("INSERT INTO orders_archive(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,hedgeId,leverage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", order)
+        BacktestRepository.Execute("INSERT INTO orders_archive(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,leverage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", order)
 
     @staticmethod
     def get_active_symbols():
@@ -390,7 +386,7 @@ class BacktestRepository:
 
     @staticmethod
     def get_symbol_info(symbol:str):
-        return BacktestRepository.ExecuteWithResult(f"SELECT deviation, lin_reg_coef_a, lin_reg_coef_b FROM active_pairs WHERE symbol == '{symbol}'")[0]
+        return BacktestRepository.ExecuteWithResult(f"SELECT deviation, lin_reg_coef_a, lin_reg_coef_b FROM symbols WHERE symbol == '{symbol}'")[0]
     
     @staticmethod
     def get_coins_with_open_orders_by_hedges():
