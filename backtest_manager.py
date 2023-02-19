@@ -99,60 +99,44 @@ def seed_backtest_klines():
     pass
 
 
-def get_pair_cointegrations(coin1:str, bars1, coin2:str, bars2):
-    if len(bars1) != len(bars2):
-        raise Exception('bars count is not equal') 
-    try:
-        result = []
-        bar_count = ConfigManager.config['bar_count']
-        #bar_count = 240
-        relation_bars_closes = [b1[5]/b2[5] for b1, b2 in zip(bars1, bars2, strict=True)]
-        bars_time = [b[6] for b in bars1]
-        pair_id = BacktestRepository.get_backtest_pairId(coin1, coin2)
-        for i in range(len(bars1)-bar_count):
-            if bars1[i+bar_count][6] <= 1674554399999:
-                continue
-            slice_relation = relation_bars_closes[i:i+bar_count]
-            #df = adfuller(slice_relation)
-            deviation = MathHelper.calculate_deviation(slice_relation)
-            coefs = MathHelper.calculate_linear_regression_coefficients(bars_time[i:i+bar_count],slice_relation)
-            hurst_exp = compute_Hc(relation_bars_closes, kind='price', simplified=True)[0]
-            #result.append((bars1[i+bar_count][6], df[0], 0, deviation, coefs[0], coefs[1], hurst_exp, 3600,  pair_id))
-            pass
-        BacktestRepository.add_backtest_cointegrations(result)    
+def calculate_symbol_preloaded_data(symbol:str, bars, last_counted_time:int=None):
+    result = []
+    bar_count = ConfigManager.config['bar_count']
+    #bar_count = 240
+    bars_closes = [b[5] for b in bars]
+    bars_times = [b[6] for b in bars]
+
+    for i in range(len(bars)-bar_count):
+        if last_counted_time is not None and bars[i+bar_count][6] <= last_counted_time:
+            continue
+        closes_slice = bars_closes[i:i+bar_count]
+        deviation = MathHelper.calculate_deviation(closes_slice)
+        coefs = MathHelper.calculate_linear_regression_coefficients(bars_times[i:i+bar_count], closes_slice)
+        hurst_exp = compute_Hc(closes_slice, kind='price', simplified=True)[0]
+        result.append((bars[i+bar_count][6], deviation, coefs[0], coefs[1], hurst_exp, symbol))
+        pass
+    BacktestRepository.add_symbols_preloaded_data(result)    
  
-    except Exception as err: get_pair_cointegrations(coin1, bars1, coin2, bars2)
 
-def get_pairs_cointegrations(*args):
-    i=1
-    for p in args: 
-        print('{0}/{1}'.format(i, len(args)))
-        i +=1
-        pair = p.split('/')
-        coin1 = pair[0]
-        bars1 = BacktestRepository.get_backtest_klines1h_by_symbol(coin1)
-        #bars1 = BacktestRepository.get_backtest_klines1m_by_symbol(coin1)
-        coin2 = pair[1]
-        bars2 = BacktestRepository.get_backtest_klines1h_by_symbol(coin2)
-        #bars2 = BacktestRepository.get_backtest_klines1m_by_symbol(coin2)
-        get_pair_cointegrations(coin1, bars1, coin2, bars2)
+def calculate_symbols_preloaded_data(*args):
+    for symbol in args: 
+        bars = BacktestRepository.get_backtest_klines1h_by_symbol(symbol)
+        calculate_symbol_preloaded_data(symbol, bars)
 
-def manage_backtest_cointegrations():
-    split_count = 6
-    
+def manage_symbols_preloaded_data():
+    split_count = 3
+    preloaded_data_count = 0
     pass
-    #pairs = list(split(BacktestRepository.get_backtest_uncalculated_pairs(),split_count))
-    pairs = list(split([p[0] for p in BacktestRepository.ExecuteWithResult("Select pair FROM(SELECT pair, count(*) as c from cointegrations INNER JOIN pairs ON pairs.id == cointegrations.pairId GROUP BY pairId) WHERE c == 552")],split_count))
-    #pairs = list(split(['BTCUSDT/ETHUSDT'],split_count))
+    symbols = list(split([p[0] for p in BacktestRepository.ExecuteWithResult(f"SELECT symbol FROM currencies")],split_count))
+
     processes = []
     for i in range(split_count):
-        processes.append(Process(target=get_pairs_cointegrations, args=list(pairs[i])))
+        processes.append(Process(target=calculate_symbols_preloaded_data, args=list(symbols[i])))
     for p in processes:
         p.start()
     for p in processes:
         p.join()    
 
-    BacktestRepository.Execute("UPDATE cointegrations SET adf=0 WHERE adf IS NULL")
  
 def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coins, klines_1h, is_trade_creation_allowed=True):
 
@@ -361,5 +345,6 @@ def split(a:list, n:int):
 
 
 if __name__ == '__main__':
+    manage_symbols_preloaded_data()
     run_backtest()
     pass

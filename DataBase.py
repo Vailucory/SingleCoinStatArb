@@ -108,8 +108,8 @@ class BacktestRepository:
         return BacktestRepository.ExecuteWithResult("SELECT * FROM currencies")
 
     @staticmethod
-    def add_backtest_cointegrations(values):
-        BacktestRepository.ExecuteMany("INSERT INTO cointegrations(time,adf,eg,deviation,lin_reg_coef_a,lin_reg_coef_b,hurst_exponent,_interval,pairId) VALUES(?,?,?,?,?,?,?,?,?)", values)
+    def add_symbols_preloaded_data(values):
+        BacktestRepository.ExecuteMany("INSERT INTO preloaded_symbols_info(time,deviation,lin_reg_coef_a,lin_reg_coef_b,hurst_exponent,symbol) VALUES(?,?,?,?,?,?)", values)
 
     @staticmethod
     def update_backtest_cointegrations(values):
@@ -145,10 +145,7 @@ class BacktestRepository:
                                                                 LEFT JOIN cointegrations ON pairs.id = cointegrations.pairId
                                                                 WHERE cointegrations.time IS null""")
         return [f[0] for f in querry_result]
-    @staticmethod
-    def get_backtest_pairId(coin1, coin2):
-        return BacktestRepository.ExecuteWithResult(f"SELECT id FROM pairs WHERE pair == '{coin1}/{coin2}'")[0][0]
-    
+
     @staticmethod
     def add_klines(symbol, klines, interval):
         int_interval = IntervalConverter.interval_to_time(interval)

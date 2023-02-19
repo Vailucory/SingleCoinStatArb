@@ -13,33 +13,15 @@ from math_helper import MathHelper
 import random
 import binance.error as ApiErrors
 from hurst import compute_Hc
-from Binance import BinanceAPI
+from Binance import BinanceAPI, MAX_WEIGHT_PER_MINUTE
 from interval_converter import IntervalConverter
 
-
-
-TICKER_PRICE_WEIGHT = 1
-CANCEL_ORDER_WEIGHT = 1
-GET_SYMBOL_ORDERS_WEIGHT = 1
-GET_ORDERS_WEIGHT = 40
-GET_TRADES_WEIGHT = 5
-BALANCE_WEIGHT = 5
-EXCHANGE_INFO_WEIGHT = 1
-LEVERAGE_INFO_WEIGHT = 1
-KLINES_1_100_WEIGHT = 1
-KLINES_100_500_WEIGHT = 2
-KLINES_500_1000_WEIGHT = 5
-KLINES_1000_1500_WEIGHT = 10
-CHANGE_LEVERAGE_WEIGHT = 1
-MAX_WEIGHT_PER_MINUTE = 1200
 MAX_ORDERS_PER_10SEC = 50
 MAX_WEIGHT_PER_LOOP = 8
 LOOPS_PER_MINUTE = int(MAX_WEIGHT_PER_MINUTE/MAX_WEIGHT_PER_LOOP) 
 ONLINE_TEST_MODE = False
 BACKTEST_MODE = True
 PRODUCTION_MODE = False
-USE_VIRTUAL_KOTLETA = True
-USE_MIN_REVERSION = True
 ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD = 15/100# 15%
 
 
@@ -144,9 +126,8 @@ def close_market_order(market, current_price, exit_time, type, limit_order=None,
         #we need to discard 2 last fields
         Repository.archive_order(market[:orders_definition.lastPrice])                            
         Repository.set_available_balance(Repository.get_available_balance()+market[orders_definition.origQty]/market[orders_definition.leverage]*market[orders_definition.price]+profit)
-        if USE_VIRTUAL_KOTLETA:
-            exit_commission = -MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
-            Repository.add_to_balance(exit_commission)
+        exit_commission = -MathHelper.calculate_exiting_market_commission(current_price, market[orders_definition.origQty])
+        Repository.add_to_balance(exit_commission)
         
 def fill_backtest_order_with_defaults(order:dict):
     order.update({'symbol':None})
@@ -404,12 +385,12 @@ def symbols_loop():
 
                     #update kotleta values
                     if ONLINE_TEST_MODE:
-                        kotleta = Repository.get_balance() if USE_VIRTUAL_KOTLETA else Repository.get_available_balance()
+                        kotleta = Repository.get_balance() 
                         if Repository.get_available_balance() < kotleta * 0.15:
                             continue
                     else:
                         balance = BinanceAPI.get_production_balance()
-                        kotleta = balance['balance'] if USE_VIRTUAL_KOTLETA else balance['available_balance']
+                        kotleta = balance['balance'] 
                         if balance['available_balance'] < kotleta * 0.20:
                             continue
 
@@ -497,8 +478,7 @@ def symbols_loop():
                     if PRODUCTION_MODE:
                         balance = BinanceAPI.get_production_balance()
                         Repository.set_available_balance(balance['available_balance'])
-                        if USE_VIRTUAL_KOTLETA:
-                            Repository.set_balance(balance['balance'])
+                        Repository.set_balance(balance['balance'])
                     #print('Exit due to orders placement|Time elapsed: {0}'.format(time.time() - pair_start_time)) 
                     continue
                 pass
@@ -616,7 +596,7 @@ if __name__ == '__main__':
     pass
 
     #p1 = Process(target=update_symbols)
-    p2 = Process(target=symbols_loop)
+    #p2 = Process(target=symbols_loop)
     #p3 = Process(target=trade_calculator)
     #p1.start()
     #p2.start()
