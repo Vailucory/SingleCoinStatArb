@@ -191,7 +191,7 @@ def manage_market_order_creation(coin, quantity, side, current_price, stop_price
             market_order['type'] = 'MARKET'
             market_order['reduceOnly'] = '0'
             market_order['closePosition'] = '0'
-            market_order['side'] = 'BUY'
+            market_order['side'] = side
             market_order['positionSide'] = 'BOTH'
             market_order['stopPrice'] = 0
             market_order['workingType'] = 'CONTRACT_PRICE'
