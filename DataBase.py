@@ -213,8 +213,8 @@ class BacktestRepository:
         BacktestRepository.Execute("DELETE FROM balance_history")   
         BacktestRepository.Execute("DELETE FROM available_balance_history")  
         #BacktestRepository.Execute("INSERT OR IGNORE INTO variables VALUES('is_program_shutdown_started', 0)") 
-        BacktestRepository.set_available_balance(9.25382, 0)
-        BacktestRepository.set_balance(9.25382, 0)
+        BacktestRepository.set_available_balance(30, 0)
+        BacktestRepository.set_balance(30, 0)
         BacktestRepository.set_is_order_creation_allowed(True)
         BacktestRepository.set_is_program_shutdown_started(False)
 
@@ -300,8 +300,11 @@ class BacktestRepository:
         querry_result = BacktestRepository.ExecuteWithResult(f"SELECT * FROM orders WHERE symbol == '{symbol.upper()}'")
         return len(querry_result) > 0    
     @staticmethod
-    def update_symbol_is_outside_deviation(symbol, is_outside_deviation):
-        BacktestRepository.Execute(f"UPDATE symbols SET is_outside_deviation = {is_outside_deviation} WHERE symbol == '{symbol}'")   
+    def update_symbol_is_outside_deviation(symbol, is_outside_deviation, time=int(time.time()*1000)):
+        BacktestRepository.Execute(f"UPDATE symbols SET is_outside_deviation = {is_outside_deviation}, iod_last_updated = {time} WHERE symbol == '{symbol}'")   
+    @staticmethod
+    def get_symbol_iod_last_updated(symbol): 
+        return BacktestRepository.ExecuteWithResult(f"SELECT iod_last_updated FROM symbols WHERE symbol == '{symbol}'")[0][0]
     @staticmethod
     def get_currency(symbol):
         return BacktestRepository.ExecuteWithResult(f"SELECT * FROM currencies WHERE symbol == '{symbol}'")[0]

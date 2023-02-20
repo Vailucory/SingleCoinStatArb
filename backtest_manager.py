@@ -234,14 +234,15 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
                 #calculating pair relation at the moment
                 coin_price = active_symbols_klines[symbol][close]
 
-                #TODO: Change is_outside_deviation behaviour 
-                # so it's should be triggered only if current price exceeded bound for 1h or so
-                # to prevent order creation on exiting deviation instead of returning move
                 if coin_price < upper_bound and coin_price > lower_bound:
                     
-                    
-                    BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0)
+                    #skip if price was outside deviation less than hour to prevent early order creation
+                    if close_time - BacktestRepository.get_symbol_iod_last_updated(symbol) <= 3600000:
+                        BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
+                        continue
 
+                    BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
+                    
                     balance = BacktestRepository.get_balance()
                     if BacktestRepository.get_available_balance() < balance * ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD:
                         continue
@@ -290,7 +291,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
             coin_price = active_symbols_klines[symbol][close]
 
             if coin_price > upper_bound or coin_price < lower_bound:
-                BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=1)        
+                BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=1, time=close_time)        
         pass
         
 
