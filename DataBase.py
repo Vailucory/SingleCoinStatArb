@@ -201,7 +201,13 @@ class BacktestRepository:
     @staticmethod
     def update_variable(name, value):
         BacktestRepository.Execute(f"UPDATE variables SET value = {value} WHERE name == '{name}'")
-    
+    @staticmethod
+    def update_symbol_last_price(symbol, last_price):
+        BacktestRepository.Execute("UPDATE symbols SET last_price=? WHERE symbol == ?", (last_price, symbol))
+    @staticmethod
+    def get_symbol_last_price(symbol):
+        return BacktestRepository.ExecuteWithResult("SELECT last_price FROM symbols WHERE symbol == ?", (symbol,))[0][0]
+
 
     @staticmethod
     def seed_database():

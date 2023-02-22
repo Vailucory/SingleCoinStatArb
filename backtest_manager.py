@@ -4,7 +4,7 @@ from config_manager import ConfigManager
 import time
 from math_helper import MathHelper
 from multiprocessing import Process
-from Bot import close_market_order, manage_market_order_creation, ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD
+from Bot import close_market_order, manage_market_order_creation, ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD, PUMP_DUMP_INTERCEPT_MODE
 from Binance import BinanceAPI
 from datetime import datetime
 from hurst import compute_Hc
@@ -139,8 +139,8 @@ def manage_symbols_preloaded_data():
 
  
 def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coins, klines_1h, is_trade_creation_allowed=True):
-
-    add_update_backtest_symbols(preloaded_symbols_info)
+    if is_trade_creation_allowed:
+        add_update_backtest_symbols(preloaded_symbols_info)
     klines_1m = BacktestRepository.get_backtest_klines1m(start_time, end_time)
     keys = list(klines_1m.keys())
     symbol_index = 0
@@ -221,65 +221,124 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
                 continue
 
             if is_outside_deviations:
-                #getting linear regression polynom coefficients and deviation value
-                deviation_multiplier = ConfigManager.config['lin_reg_deviation']
                 deviation = symbol_info[1]
-                coefficients_linear_regression = (symbol_info[2], symbol_info[3])
-                coefficients_up = (symbol_info[2], symbol_info[3] + (deviation * deviation_multiplier))
-                coefficients_down = (symbol_info[2], symbol_info[3] - (deviation * deviation_multiplier))
-                epoch_time = close_time
-                upper_bound = MathHelper.calculate_polynom(epoch_time, coefficients_up)
-                lower_bound = MathHelper.calculate_polynom(epoch_time, coefficients_down)
-                linear_regression_bound = MathHelper.calculate_polynom(epoch_time, coefficients_linear_regression)
-                #calculating pair relation at the moment
                 coin_price = active_symbols_klines[symbol][close]
-
-                if coin_price < upper_bound and coin_price > lower_bound:
-                    
-                    #skip if price was outside deviation less than hour to prevent early order creation
-                    if close_time - BacktestRepository.get_symbol_iod_last_updated(symbol) <= 3600000:
-                        BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
-                        continue
-
-                    BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
-                    
-                    balance = BacktestRepository.get_balance()
-                    if BacktestRepository.get_available_balance() < balance * ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD:
-                        continue
-                    
-                    if not BacktestRepository.get_is_order_creation_allowed():
-                        continue
-
-                    currency_info = BacktestRepository.get_currency(symbol)
-                    max_notional = 1000000
-
-                    leverage = currency_info[5]
-                    side = 'SELL' if coin_price > linear_regression_bound else 'BUY'
-
-                    quantity = MathHelper.calculate_quantity(total=balance,
-                                                             entry_price=coin_price,
-                                                             precision=currency_info[2],
-                                                             minimum_notion=currency_info[3],
-                                                             maximum_notion=max_notional,
-                                                             leverage=leverage)
-                    
-                    manage_market_order_creation(coin=symbol, 
-                                                quantity=quantity, 
-                                                current_price=coin_price, 
-                                                side=side,
-                                                stop_price=None,
-                                                leverage=leverage, 
-                                                backtest_time=close_time)  
-                    
+                coefficients_linear_regression = (symbol_info[2], symbol_info[3])
+                epoch_time = close_time
+                linear_regression_bound = MathHelper.calculate_polynom(epoch_time, coefficients_linear_regression)
+                balance = BacktestRepository.get_balance()
+                if BacktestRepository.get_available_balance() < balance * ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD:
                     continue
-                pass
+                if PUMP_DUMP_INTERCEPT_MODE:
+                    last_price = BacktestRepository.get_symbol_last_price(symbol)
+                    if coin_price > linear_regression_bound and last_price - coin_price >= deviation * 2 and coin_price - linear_regression_bound >= deviation * 2:
+                        currency_info = BacktestRepository.get_currency(symbol)
+                        max_notional = 1000000
+
+                        leverage = currency_info[5]
+                        side = 'SELL'
+                        quantity = MathHelper.calculate_quantity(total=balance,
+                                                                entry_price=coin_price,
+                                                                precision=currency_info[2],
+                                                                minimum_notion=currency_info[3],
+                                                                maximum_notion=max_notional,
+                                                                leverage=leverage)
+                        
+                        manage_market_order_creation(coin=symbol, 
+                                                    quantity=quantity, 
+                                                    current_price=coin_price, 
+                                                    side=side,
+                                                    stop_price=None,
+                                                    leverage=leverage, 
+                                                    backtest_time=close_time) 
+                        BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)   
+                    elif coin_price < linear_regression_bound and coin_price - last_price >= deviation * 2 and linear_regression_bound - coin_price >= deviation * 2:
+                        currency_info = BacktestRepository.get_currency(symbol)
+                        max_notional = 1000000
+
+                        leverage = currency_info[5]
+                        side = 'BUY'
+                        quantity = MathHelper.calculate_quantity(total=balance,
+                                                                entry_price=coin_price,
+                                                                precision=currency_info[2],
+                                                                minimum_notion=currency_info[3],
+                                                                maximum_notion=max_notional,
+                                                                leverage=leverage)
+                        
+                        manage_market_order_creation(coin=symbol, 
+                                                    quantity=quantity, 
+                                                    current_price=coin_price, 
+                                                    side=side,
+                                                    stop_price=None,
+                                                    leverage=leverage, 
+                                                    backtest_time=close_time) 
+                        BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
+
+
+                    if close_time - BacktestRepository.get_symbol_iod_last_updated(symbol) <= 3600000:
+                        BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)    
+                    if (coin_price > linear_regression_bound and coin_price - linear_regression_bound < deviation * 2) or (coin_price < linear_regression_bound and linear_regression_bound - coin_price < deviation * 2):    
+                        BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
+                else:
+                    #getting linear regression polynom coefficients and deviation value
+                    deviation_multiplier = ConfigManager.config['lin_reg_deviation']
+                    
+                    
+                    coefficients_up = (symbol_info[2], symbol_info[3] + (deviation * deviation_multiplier))
+                    coefficients_down = (symbol_info[2], symbol_info[3] - (deviation * deviation_multiplier))
+                    
+                    upper_bound = MathHelper.calculate_polynom(epoch_time, coefficients_up)
+                    lower_bound = MathHelper.calculate_polynom(epoch_time, coefficients_down)
+                    
+                    #calculating pair relation at the moment
+                    
+
+                    if coin_price < upper_bound and coin_price > lower_bound:
+                        
+                        #skip if price was outside deviation less than hour to prevent early order creation
+                        if close_time - BacktestRepository.get_symbol_iod_last_updated(symbol) <= 3600000:
+                            BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
+                            continue
+
+                        BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
+                        
+                        balance = BacktestRepository.get_balance()
+                        if BacktestRepository.get_available_balance() < balance * ORDER_CREATION_AVAILABLE_BALANCE_TRESHOLD:
+                            continue
+                        
+                        if not BacktestRepository.get_is_order_creation_allowed():
+                            continue
+
+                        currency_info = BacktestRepository.get_currency(symbol)
+                        max_notional = 1000000
+
+                        leverage = currency_info[5]
+                        side = 'SELL' if coin_price > linear_regression_bound else 'BUY'
+
+                        quantity = MathHelper.calculate_quantity(total=balance,
+                                                                entry_price=coin_price,
+                                                                precision=currency_info[2],
+                                                                minimum_notion=currency_info[3],
+                                                                maximum_notion=max_notional,
+                                                                leverage=leverage)
+                        
+                        manage_market_order_creation(coin=symbol, 
+                                                    quantity=quantity, 
+                                                    current_price=coin_price, 
+                                                    side=side,
+                                                    stop_price=None,
+                                                    leverage=leverage, 
+                                                    backtest_time=close_time)  
+                        
+                        continue
+                    pass
             
     
             #exit if not anti-persistent series
-            if hurst_exponent >= 0.5:
+            if hurst_exponent >= 0.5 and not PUMP_DUMP_INTERCEPT_MODE:
                 continue
 
-            deviation_multiplier = ConfigManager.config['lin_reg_deviation']
+            deviation_multiplier = ConfigManager.config['lin_reg_deviation'] if not PUMP_DUMP_INTERCEPT_MODE else 5
             deviation = symbol_info[1]
             coefficients_up = (symbol_info[2], symbol_info[3] + (deviation * deviation_multiplier))
             coefficients_down = (symbol_info[2], symbol_info[3] - (deviation * deviation_multiplier))
@@ -291,7 +350,9 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
             coin_price = active_symbols_klines[symbol][close]
 
             if coin_price > upper_bound or coin_price < lower_bound:
-                BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=1, time=close_time)        
+                BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=1, time=close_time)     
+                if PUMP_DUMP_INTERCEPT_MODE:
+                    BacktestRepository.update_symbol_last_price(symbol, coin_price)   
         pass
         
 
