@@ -137,3 +137,9 @@ dmypy.json
 
 # Test playground python file
 test_playground.py
+
+UI.py
+charts.py
+Chart_builder.py
+charts/
+backtests/
