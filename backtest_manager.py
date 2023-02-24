@@ -224,6 +224,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
                 deviation = symbol_info[1]
                 coin_price = active_symbols_klines[symbol][close]
                 coefficients_linear_regression = (symbol_info[2], symbol_info[3])
+                deviation_multiplier = ConfigManager.config['lin_reg_deviation']
                 epoch_time = close_time
                 linear_regression_bound = MathHelper.calculate_polynom(epoch_time, coefficients_linear_regression)
                 balance = BacktestRepository.get_balance()
@@ -231,7 +232,8 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
                     continue
                 if PUMP_DUMP_INTERCEPT_MODE:
                     last_price = BacktestRepository.get_symbol_last_price(symbol)
-                    if coin_price > linear_regression_bound and last_price - coin_price >= deviation * 2 and coin_price - linear_regression_bound >= deviation * 2:
+                    deviation_coefficient = deviation_multiplier * 0.4
+                    if coin_price > linear_regression_bound and last_price - coin_price >= deviation * deviation_coefficient and coin_price - linear_regression_bound >= deviation * deviation_coefficient:
                         currency_info = BacktestRepository.get_currency(symbol)
                         max_notional = 1000000
 
@@ -252,7 +254,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
                                                     leverage=leverage, 
                                                     backtest_time=close_time) 
                         BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)   
-                    elif coin_price < linear_regression_bound and coin_price - last_price >= deviation * 2 and linear_regression_bound - coin_price >= deviation * 2:
+                    elif coin_price < linear_regression_bound and coin_price - last_price >= deviation * deviation_coefficient and linear_regression_bound - coin_price >= deviation * deviation_coefficient:
                         currency_info = BacktestRepository.get_currency(symbol)
                         max_notional = 1000000
 
@@ -277,7 +279,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
 
                     if close_time - BacktestRepository.get_symbol_iod_last_updated(symbol) <= 3600000:
                         BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)    
-                    if (coin_price > linear_regression_bound and coin_price - linear_regression_bound < deviation * 2) or (coin_price < linear_regression_bound and linear_regression_bound - coin_price < deviation * 2):    
+                    if (coin_price > linear_regression_bound and coin_price - linear_regression_bound < deviation * deviation_coefficient) or (coin_price < linear_regression_bound and linear_regression_bound - coin_price < deviation * deviation_coefficient):    
                         BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)
                 else:
                     #getting linear regression polynom coefficients and deviation value
@@ -338,7 +340,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
             if hurst_exponent >= 0.5 and not PUMP_DUMP_INTERCEPT_MODE:
                 continue
 
-            deviation_multiplier = ConfigManager.config['lin_reg_deviation'] if not PUMP_DUMP_INTERCEPT_MODE else 5
+            deviation_multiplier = ConfigManager.config['lin_reg_deviation']
             deviation = symbol_info[1]
             coefficients_up = (symbol_info[2], symbol_info[3] + (deviation * deviation_multiplier))
             coefficients_down = (symbol_info[2], symbol_info[3] - (deviation * deviation_multiplier))
