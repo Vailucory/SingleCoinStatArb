@@ -23,8 +23,8 @@ def seed_backtest_klines():
     t = bar_count * interval
 
     #make smart klines loading
-    start_date = datetime(year=2023, month=1, day=24, hour=12)
-    end_date = datetime(year=2023, month=1, day=31, hour=23)
+    start_date = datetime(year=2022, month=9, day=27, hour=10)
+    end_date = datetime(year=2022, month=12, day=27, hour=10)
     
     #start_date = datetime(year=2022, month=10, day=10, hour=23)
     #end_date = datetime(year=2022, month=10, day=18, hour=23)
@@ -51,36 +51,27 @@ def seed_backtest_klines():
         log_time_start = time.time() 
 
         start_time = int(datetime.timestamp(start_date)*1000)
-        start_time_1h = start_time# - config['bar_count'] * 3600000
+        start_time_1h = start_time - config['bar_count'] * 3600000
         end_time_1h = end_time
         i += 1
 
         print('Loading {0} | {1} from {2}'.format(symbol, i, len(currencies)))
-        #klines_1h = []
-        #while True:
-        #    kline = []
-        #    while True:
-        #        if is_api_call_possible(KLINES_1000_1500_WEIGHT):
-        #            t = time.time() * 1000
-        #            Repository.add_weight(weight=KLINES_1000_1500_WEIGHT, method='klines_1500', time=t)
-        #            kline = [k for k in client.klines(symbol=symbol, interval='1h', startTime=start_time_1h, limit= limit) if k[0]< end_time_1h]
-        #            Repository.update_weight_time(old_time=t, new_time=time.time() * 1000)
-        #            break
-        #        #wait 1 second and try to repeat
-        #        time.sleep(1)
-        #    klines_1h.extend(kline)
-        #    if len(kline) != 0:
-        #        start_time_1h = int(kline[-1][0])+1
-        #    if len(kline) < limit:
-        #        break  
-        #print('Loaded 1h for {0} | Time elapsed: {1}'.format(symbol, time.time()-log_time_start))
-        #log_time_start = time.time() 
-        #tmp = klines_1h[-1]            
-        #BacktestRepository.add_klines(symbol,klines_1h,'1h')
+        klines_1h = []
+        while True:
+            kline = [k for k in BinanceAPI.get_kline(kline_interval='1h', limit=limit, symbol=symbol, start_time=start_time_1h) if k[0]< end_time_1h]
+            klines_1h.extend(kline)
+            if len(kline) != 0:
+                start_time_1h = int(kline[-1][0])+1
+            if len(kline) < limit:
+                break  
+        print('Loaded 1h for {0} | Time elapsed: {1}'.format(symbol, time.time()-log_time_start))
+        #tmp = klines_1h[-1]
+        BacktestRepository.add_klines(symbol,klines_1h,'1h')
+        print(len(klines_1h))
 
         start_time = int(datetime.timestamp(start_date)*1000)
-        start_time_1m = 1672570799999-3600000*2#start_time + 24 * 3600000#- config['bar_count'] * 3600000
-        end_time_1m = 1676481719000#end_time + 24 * 3600000
+        start_time_1m = start_time# + 24 * 3600000#- config['bar_count'] * 3600000
+        end_time_1m = end_time + 24 * 3600000
 
         klines_1m = []
         while True:
@@ -91,7 +82,7 @@ def seed_backtest_klines():
             if len(kline) < limit:
                 break  
         print('Loaded 1m for {0} | Time elapsed: {1}'.format(symbol, time.time()-log_time_start))
-        tmp = klines_1m[-1]
+        #tmp = klines_1m[-1]
         BacktestRepository.add_klines(symbol,klines_1m,'1m')
         print(len(klines_1m))
  
