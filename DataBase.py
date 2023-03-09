@@ -421,16 +421,13 @@ class BacktestRepository:
 class Repository:
     SQLITE = 'SQLITE'
     MYSQL = 'MYSQL'
-    CURRENT_DATABASE = SQLITE
+    CURRENT_DATABASE = MYSQL
     db = sqlite3.connect(ConfigManager.config['connection_string']) if CURRENT_DATABASE == SQLITE else mysql.connector.connect(
         host="localhost",
-        #host='47.243.57.109',
         user=ConfigManager.config['mysql_login'],
         password=ConfigManager.config['mysql_password'],
         database=ConfigManager.config['mysql_database'],
-        autocommit=True
-)
-
+        autocommit=True)
 
     def __del__(self):
         Repository.db.close()
@@ -515,36 +512,27 @@ class Repository:
                     raise err     
 
     @staticmethod
-    def seed_database(ONLINE_TEST_MODE:bool):
+    def seed_database():
         Repository.Execute("DELETE FROM logs") 
-        Repository.Execute("DELETE FROM cointegrations")    
-        Repository.Execute("DELETE FROM pairs") 
+        Repository.Execute("DELETE FROM symbol_information_updates")    
+        Repository.Execute("DELETE FROM symbols") 
         Repository.Execute("DELETE FROM trades") 
         Repository.Execute("DELETE FROM available_balance_history") 
         Repository.Execute("DELETE FROM balance_history")     
-        Repository.Execute("DROP TABLE orders") 
-        if ONLINE_TEST_MODE:
-            if Repository.CURRENT_DATABASE == Repository.SQLITE:
-                Repository.Execute("""CREATE TABLE "orders"("orderId"	INTEGER,"symbol"	TEXT,"status"	TEXT,"clientOrderId"	TEXT,"price"	REAL,"avgPrice"	REAL,"origQty"	REAL,"executedQty"	REAL,"cumQuote"	REAL,"timeInForce"	TEXT,"type"	TEXT,"reduceOnly"	INTEGER,"closePosition"	INTEGER,"side"	TEXT,"positionSide"	TEXT,"stopPrice"	REAL,"workingType"	TEXT,"priceProtect"	INTEGER,"origType"	TEXT,"updateTime"	INTEGER,"tradeId"	INTEGER,"hedgeId"	INTEGER,"leverage"	INTEGER,"lastPrice"	REAL,"currentProfit"	REAL);""")     
-            elif Repository.CURRENT_DATABASE == Repository.MYSQL:
-                Repository.Execute("""CREATE TABLE orders (orderId BIGINT,symbol VARCHAR(20), status VARCHAR(32), clientOrderId VARCHAR(64),price REAL,avgPrice REAL,origQty REAL,executedQty REAL,cumQuote REAL,timeInForce VARCHAR(10),type VARCHAR(20),reduceOnly INTEGER,closePosition INTEGER,side VARCHAR(10),positionSide VARCHAR(10),stopPrice REAL,workingType VARCHAR(32),priceProtect INTEGER,origType VARCHAR(20),updateTime BIGINT,tradeId BIGINT,hedgeId BIGINT,leverage INTEGER,lastPrice REAL,currentProfit REAL)ENGINE=INNODB;""")
-            Repository.set_available_balance(1000.0)
-            Repository.set_balance(1000.0)
-        else:
-            if Repository.CURRENT_DATABASE == Repository.SQLITE:
-                Repository.Execute("""CREATE TABLE "orders"("orderId"	INTEGER,"symbol"	TEXT,"status"	TEXT,"clientOrderId"	TEXT,"price"	REAL,"avgPrice"	REAL,"origQty"	REAL,"executedQty"	REAL,"cumQuote"	REAL,"timeInForce"	TEXT,"type"	TEXT,"reduceOnly"	INTEGER,"closePosition"	INTEGER,"side"	TEXT,"positionSide"	TEXT,"stopPrice"	REAL,"workingType"	TEXT,"priceProtect"	INTEGER,"origType"	TEXT,"updateTime"	INTEGER,"tradeId"	INTEGER,"hedgeId"	INTEGER,"leverage"	INTEGER);""")      
-            elif Repository.CURRENT_DATABASE == Repository.MYSQL:
-                Repository.Execute("""CREATE TABLE orders (orderId BIGINT,symbol VARCHAR(20), status VARCHAR(32), clientOrderId VARCHAR(64),price REAL,avgPrice REAL,origQty REAL,executedQty REAL,cumQuote REAL,timeInForce VARCHAR(10),type VARCHAR(20),reduceOnly INTEGER,closePosition INTEGER,side VARCHAR(10),positionSide VARCHAR(10),stopPrice REAL,workingType VARCHAR(32),priceProtect INTEGER,origType VARCHAR(20),updateTime BIGINT,tradeId BIGINT,hedgeId BIGINT,leverage INTEGER)ENGINE=INNODB;""")
-        Repository.Execute("DELETE FROM test_results")
+        Repository.Execute("DELETE FROM orders")
         Repository.Execute("DELETE FROM orders_archive")  
-        
-        Repository.set_backtest_hedge_limit(-1)
         Repository.set_is_order_creation_allowed(True)
         Repository.set_is_program_shutdown_started(False)
-        Repository.set_hedges_launched(0)
-
         
-
+    @staticmethod
+    def get_symbol_last_price(symbol):
+        return Repository.ExecuteWithResult("SELECT last_price FROM symbols WHERE symbol == ?", (symbol,))[0][0]
+    @staticmethod
+    def get_symbol_iod_last_updated(symbol): 
+        return Repository.ExecuteWithResult(f"SELECT iod_last_updated FROM symbols WHERE symbol == '{symbol}'")[0][0]
+    @staticmethod
+    def update_symbol_last_price(symbol, last_price):
+        Repository.Execute("UPDATE symbols SET last_price=? WHERE symbol == ?", (last_price, symbol))
 
     @staticmethod
     def get_available_balance():
@@ -564,12 +552,6 @@ class Repository:
     def add_to_balance(value):
         Repository.set_balance(Repository.get_balance()+value)
 
-    @staticmethod
-    def get_backtest_hedge_limit():
-        return int(Repository.get_variable('backtest_hedge_limit'))
-    @staticmethod    
-    def set_backtest_hedge_limit(value):
-        Repository.update_variable('backtest_hedge_limit', value)
     @staticmethod
     def get_is_order_creation_allowed():
         return bool(Repository.get_variable('is_order_creation_allowed'))
@@ -600,57 +582,32 @@ class Repository:
         Repository.Execute("INSERT INTO balance_history VALUES(?,?)", (balance, int(time.time()*1000)))
 
     @staticmethod
-    def add_pairs(pairs_to_import):
-        Repository.ExecuteMany("""INSERT OR IGNORE 
-                                  INTO pairs(pair,adf,failed_cointegrations,is_outside_deviations,deviation,lin_reg_coef_a,lin_reg_coef_b,last_updated) 
-                                  VALUES(?,?,?,?,?,?,?,?)""", pairs_to_import)
+    def upsert_symbols(symbols_to_upsert):
+        if len(Repository.ExecuteWithResult("SELECT * FROM symbols")) == 0:
+            Repository.ExecuteMany("""INSERT INTO symbols(deviation,lin_reg_coef_a,lin_reg_coef_b,is_outside_deviation,last_updated,symbol)
+                                      VALUES(?,?,?,0,?,?)""", symbols_to_upsert)
+            return
+        Repository.ExecuteMany("""UPDATE symbols
+                                  SET deviation = ?, lin_reg_coef_a = ?, lin_reg_coef_b = ?, last_updated=?
+                                  WHERE symbol == ?""", symbols_to_upsert)
+    @staticmethod
+    def update_symbol_is_outside_deviation(symbol, is_outside_deviation, time=int(time.time()*1000)):
+        Repository.Execute(f"UPDATE symbols SET is_outside_deviation = {is_outside_deviation}, iod_last_updated = {time} WHERE symbol == '{symbol}'")  
+    @staticmethod
+    def get_active_symbols():
+        return Repository.ExecuteWithResult("SELECT * FROM symbols")
 
     @staticmethod
-    def delete_uncointegrated_pairs():
-        coins_with_active_orders = [c[0] for c in Repository.ExecuteWithResult("SELECT DISTINCT symbol FROM orders")]
-        command = "DELETE FROM pairs WHERE failed_cointegrations > 10"
-        for coin in coins_with_active_orders:
-            command += f" AND pair NOT LIKE '%{coin}%'"
-        Repository.Execute(command) 
-
-    @staticmethod
-    def update_pair_is_outside_deviations(pair, is_outside_deviations):
-        Repository.Execute("UPDATE pairs SET is_outside_deviations=?, last_updated=? WHERE pair == ?", (is_outside_deviations, int(time.time()*1000), pair))    
-
-    @staticmethod
-    def update_pairs(pairs_to_update):
-        Repository.ExecuteMany("""UPDATE pairs
-                                  SET adf=?, failed_cointegrations=failed_cointegrations + ?, 
-                                  deviation = ?, lin_reg_coef_a = ?, lin_reg_coef_b = ?, last_updated=?
-                                  WHERE pair == ?""", pairs_to_update)
-    @staticmethod
-    def set_pairs_default_is_outside_deviation():
-        Repository.Execute("UPDATE pairs SET is_outside_deviations = 0")
-    @staticmethod
-    def get_pairs():
-        return Repository.ExecuteWithResult("SELECT * FROM pairs ORDER BY adf")
-    @staticmethod
-    def get_pair_combinations():
-        return [r[0] for r in Repository.ExecuteWithResult("SELECT pair FROM pair_combinations")]
-    @staticmethod
-    def get_pair(pair):
-        return Repository.ExecuteWithResult(f"SELECT pair,deviation,lin_reg_coef_a, lin_reg_coef_b FROM pairs WHERE pair == '{pair}'")[0]
-
-
-    #Returns None if no last cointegration
-    @staticmethod
-    def get_last_cointegration():
-        querry_result = Repository.ExecuteWithResult("SELECT * FROM cointegrations ORDER BY starting_time DESC")
+    def get_last_symbol_information_update():
+        querry_result = Repository.ExecuteWithResult("SELECT * FROM symbol_information_updates ORDER BY starting_time DESC")
         return querry_result[0] if len(querry_result) != 0 else None
-        
-
     @staticmethod
-    def add_cointegration(interval, bars, starting_time, time_elapsed):
-        Repository.Execute("INSERT INTO cointegrations(_interval,bars,starting_time,time_elapsed) VALUES(?,?,?,?)", (interval, bars, starting_time, time_elapsed))
+    def add_symbol_information_update(interval, bars, starting_time, time_elapsed):
+        Repository.Execute("INSERT INTO symbol_information_updates(_interval,bars,starting_time,time_elapsed) VALUES(?,?,?,?)", (interval, bars, starting_time, time_elapsed))
 
     @staticmethod
     def add_trade(trade):
-        Repository.Execute("""INSERT INTO trades(symbol,openOrderId,closeOrderId,triggeredOrderType,side,enterPrice,exitPrice,qty,realizedPnl,enterCommission,exitCommission,enterTime,exitTime,hedgeId) 
+        Repository.Execute("""INSERT INTO trades(symbol,openOrderId,closeOrderId,triggeredOrderType,side,enterPrice,exitPrice,qty,realizedPnl,enterCommission,exitCommission,enterTime,exitTime,tradeId) 
                               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", 
                               (trade['symbol'],
                                trade['openOrderId'],
@@ -665,112 +622,66 @@ class Repository:
                                trade['exitCommission'],
                                trade['enterTime'],
                                trade['exitTime'],
-                               trade['hedgeId']))
-
-    @staticmethod
-    def get_all_trades():
-        c=Repository.db.cursor()
-        c.execute("SELECT * FROM trades")
-        return c.fetchall()
-        pass
+                               trade['tradeId']))
 
     @staticmethod
     def archive_order(order):
-        Repository.Execute("INSERT INTO orders_archive(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,hedgeId,leverage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", order)
+        Repository.Execute("INSERT INTO orders_archive(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,leverage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", order)
 
     @staticmethod
-    def add_test_order(order):
-        Repository.Execute("INSERT INTO orders(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,hedgeId,leverage,lastPrice,currentProfit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (order['orderId'], 
-                                                         order['symbol'], 
-                                                         order['status'], 
-                                                         order['clientOrderId'], 
-                                                         order['price'], 
-                                                         order['avgPrice'], 
-                                                         order['origQty'], 
-                                                         order['executedQty'], 
-                                                         order['cumQuote'], 
-                                                         order['timeInForce'], 
-                                                         order['type'], 
-                                                         order['reduceOnly'], 
-                                                         order['closePosition'], 
-                                                         order['side'], 
-                                                         order['positionSide'], 
-                                                         order['stopPrice'], 
-                                                         order['workingType'], 
-                                                         order['priceProtect'], 
-                                                         order['origType'], 
-                                                         order['updateTime'],
-                                                         order['tradeId'],
-                                                         order['hedgeId'],
-                                                         order['leverage'],
-                                                         order['lastPrice'],
-                                                         order['currentProfit']))
-    @staticmethod
     def add_order(order):
-        Repository.Execute("INSERT INTO orders(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,priceProtect,origType,updateTime,tradeId,hedgeId,leverage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (order['orderId'], 
-                                                         order['symbol'], 
-                                                         order['status'], 
-                                                         order['clientOrderId'], 
-                                                         order['price'], 
-                                                         order['avgPrice'], 
-                                                         order['origQty'], 
-                                                         order['executedQty'], 
-                                                         order['cumQuote'], 
-                                                         order['timeInForce'], 
-                                                         order['type'], 
-                                                         order['reduceOnly'], 
-                                                         order['closePosition'], 
-                                                         order['side'], 
-                                                         order['positionSide'], 
-                                                         order['stopPrice'], 
-                                                         order['workingType'], 
-                                                         order['priceProtect'], 
-                                                         order['origType'], 
-                                                         order['updateTime'],
-                                                         order['tradeId'],
-                                                         order['hedgeId'],
-                                                         order['leverage']))
+        Repository.Execute("""INSERT INTO 
+                           orders(orderId,symbol,status,clientOrderId,price,avgPrice,origQty,executedQty,cumQuote,
+                                  timeInForce,type,reduceOnly,closePosition,side,positionSide,stopPrice,workingType,
+                                  priceProtect,origType,updateTime,tradeId,leverage)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", 
+                           (order['orderId'], 
+                            order['symbol'], 
+                            order['status'], 
+                            order['clientOrderId'], 
+                            order['price'], 
+                            order['avgPrice'], 
+                            order['origQty'], 
+                            order['executedQty'], 
+                            order['cumQuote'], 
+                            order['timeInForce'], 
+                            order['type'], 
+                            order['reduceOnly'], 
+                            order['closePosition'], 
+                            order['side'], 
+                            order['positionSide'], 
+                            order['stopPrice'], 
+                            order['workingType'], 
+                            order['priceProtect'], 
+                            order['origType'], 
+                            order['updateTime'],
+                            order['tradeId'],
+                            order['leverage']))
 
     @staticmethod
     def update_order_current_parameters(current_profit, last_price, symbol):
         Repository.Execute("UPDATE orders SET lastPrice = ?, currentProfit = ? WHERE symbol == ?", (last_price, current_profit, symbol))
 
-
     @staticmethod
     def check_if_orders_available(symbol):
-        return len(Repository.ExecuteWithResult(f"SELECT * FROM orders WHERE symbol == '{symbol.upper()}'")) > 0
+        return len(Repository.ExecuteWithResult(f"SELECT * FROM orders WHERE symbol == ?", (symbol.upper(),))) > 0
         
     @staticmethod
     def get_coins_with_open_orders():
         return [o[0] for o in Repository.ExecuteWithResult("SELECT symbol FROM orders")]
-    @staticmethod
-    def get_coins_with_open_orders_by_hedges():
-        hedges = [h[0] for h in Repository.ExecuteWithResult("SELECT DISTINCT hedgeId FROM orders")]
-        if len(hedges) == 1 and hedges[0] is None:
-            return []
-        if Repository.CURRENT_DATABASE == Repository.SQLITE:
-            return [Repository.ExecuteWithResult("SELECT * FROM (SELECT substr(pair, 1, pos-1) AS coin1, substr(pair, pos+1) AS coin2 FROM (SELECT *, instr(pair, '/') AS pos FROM pairs)) WHERE coin1 IN (SELECT symbol FROM orders WHERE hedgeId == ?) AND coin2 IN (SELECT symbol FROM orders WHERE hedgeId == ?)", [hedge, hedge])[0] for hedge in hedges]
-        if Repository.CURRENT_DATABASE == Repository.MYSQL:
-            return [Repository.ExecuteWithResult("SELECT * FROM (SELECT SPLIT_STR(pair, '/', 1) as coin1, SPLIT_STR(pair, '/', 2) as coin2 FROM pair_combinations) as c WHERE coin1 IN (SELECT symbol FROM orders WHERE hedgeId = ?) AND coin2 IN (SELECT symbol FROM orders WHERE hedgeId = ?);", [hedge, hedge])[0] for hedge in hedges]
-        #return {hedge:Repository.ExecuteWithResult("SELECT symbol FROM orders WHERE hedgeId == ?", [hedge]) for hedge in hedges}
-
+        
     @staticmethod
     def get_active_order_by_type(symbol, type):
         return Repository.ExecuteWithResult(f"SELECT * FROM orders WHERE symbol == '{symbol}' AND type LIKE '%{type}%'")[0]
 
-
-    @staticmethod
-    def get_all_orders():
-        return Repository.ExecuteWithResult("SELECT * FROM orders")
     @staticmethod
     def remove_orders(symbol):
-        Repository.Execute(f"DELETE FROM orders WHERE symbol == '{symbol}'")
+        Repository.Execute(f"DELETE FROM orders WHERE symbol == ?", (symbol,))
 
     @staticmethod    
     def seed_currencies(currencies):
         Repository.Execute("DELETE FROM currencies")
         Repository.ExecuteMany("INSERT INTO currencies(symbol, price_precision,quantity_precision, minimum_notional, tick_size) VALUES (?,?,?,?,?)", currencies)
-
     @staticmethod
     def update_currencies(currencies):
         Repository.ExecuteMany("""UPDATE currencies 
@@ -794,29 +705,20 @@ class Repository:
     @staticmethod
     def get_all_currencies():
         return Repository.ExecuteWithResult("SELECT * FROM currencies")
-
     @staticmethod
     def get_currency(symbol):
-        return Repository.ExecuteWithResult(f"SELECT * FROM currencies WHERE symbol == '{symbol}'")[0]
+        return Repository.ExecuteWithResult(f"SELECT * FROM currencies WHERE symbol == ?", (symbol,))[0]
 
-    """CREATE TABLE used_weights(
-        weight INTEGER,
-        time INTEGER, 
-        method TEXT)"""
     @staticmethod
     def add_weight(weight, method, time):
         Repository.Execute("INSERT INTO used_weights(weight,time,method) VALUES(?,?,?)", (weight, (int(time)), method))    
-
     @staticmethod
     def get_weight_for_last_minute(current_time):
         minute_ago = current_time - 60000
         return sum([w[0] for w in Repository.ExecuteWithResult("SELECT weight FROM used_weights WHERE time >= ?", [minute_ago])])
-
-
     @staticmethod
     def update_weight_time(old_time, new_time):
         Repository.Execute("UPDATE used_weights SET time = ? WHERE time == ?", (new_time, old_time))
-
     @staticmethod
     def get_all_used_weights():
         return Repository.ExecuteWithResult("SELECT * FROM used_weights")
@@ -833,22 +735,12 @@ class Repository:
         Repository.Execute("INSERT INTO logs(time,message) VALUES(?,?)",(int(time.time()*1000), message))    
 
     @staticmethod
-    def add_test_result(symbol, triggered_order_type, profit, enter_price, exit_price, enter_time, exit_time, tradeId, hedgeId, leverage):
-        Repository.Execute("INSERT INTO test_results(symbol, triggered_order_type, profit, enter_price, exit_price, enter_time, exit_time, tradeId, hedgeId, leverage) VALUES(?,?,?,?,?,?,?,?,?,?)", 
-                                                    (symbol, triggered_order_type, profit, enter_price, exit_price, enter_time, exit_time, tradeId, hedgeId, leverage) )
-
-    @staticmethod
     def validate_mysql_querry(querry:str):
         return querry.replace('==', '=').replace("OR IGNORE", "IGNORE")  
 
     @staticmethod
-    def remove_coin(coin):
-        Repository.Execute(f"DELETE FROM pair_combinations WHERE pair LIKE '%{coin}%';")
-        Repository.Execute(f"DELETE FROM currencies WHERE symbol == '{coin}';")
-
-    @staticmethod
-    def get_pair_by_coins(coin1, coin2):
-        return Repository.ExecuteWithResult(f"SELECT pair, lin_reg_coef_a, lin_reg_coef_b FROM pairs WHERE pair LIKE '%{coin1}%' AND pair LIKE '%{coin2}%' ")[0]
+    def get_symbol_info(symbol:str):
+        return Repository.ExecuteWithResult(f"SELECT deviation, lin_reg_coef_a, lin_reg_coef_b FROM symbols WHERE symbol == ?", (symbol))[0]
     @staticmethod
     def get_balance_history():
         return Repository.ExecuteWithResult("SELECT * FROM balance_history")
@@ -864,13 +756,6 @@ def get_currencies_querry():
     querry += ';'
     return querry
 
-def get_pairs_querry():
-    querry = """INSERT INTO pair_combinations(pair) VALUES"""
-    for pair in Repository.ExecuteWithResult("SELECT pair FROM pair_combinations"):
-        querry += f"""("{pair[0]}"),"""
-    querry = querry.removesuffix(',')
-    querry += ';'
-    return querry
 
 if __name__ == '__main__':
     

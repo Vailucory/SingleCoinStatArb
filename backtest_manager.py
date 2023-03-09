@@ -223,8 +223,9 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
                     continue
                 if PUMP_DUMP_INTERCEPT_MODE:
                     last_price = BacktestRepository.get_symbol_last_price(symbol)
-                    deviation_coefficient = deviation_multiplier * 0.4
-                    if coin_price > linear_regression_bound and last_price - coin_price >= deviation * deviation_coefficient and coin_price - linear_regression_bound >= deviation * deviation_coefficient:
+                    deviation_coefficient = deviation_multiplier * 0.2
+                    return_deviation_coefficient = deviation_multiplier * 0.5
+                    if coin_price > linear_regression_bound and last_price - coin_price >= deviation * deviation_coefficient and coin_price - linear_regression_bound >= deviation * return_deviation_coefficient:
                         currency_info = BacktestRepository.get_currency(symbol)
                         max_notional = 1000000
 
@@ -245,7 +246,7 @@ def process_backtest_slice(start_time:int, end_time, preloaded_symbols_info, coi
                                                     leverage=leverage, 
                                                     backtest_time=close_time) 
                         BacktestRepository.update_symbol_is_outside_deviation(symbol=symbol, is_outside_deviation=0, time=close_time)   
-                    elif coin_price < linear_regression_bound and coin_price - last_price >= deviation * deviation_coefficient and linear_regression_bound - coin_price >= deviation * deviation_coefficient:
+                    elif coin_price < linear_regression_bound and coin_price - last_price >= deviation * deviation_coefficient and linear_regression_bound - coin_price >= deviation * return_deviation_coefficient:
                         currency_info = BacktestRepository.get_currency(symbol)
                         max_notional = 1000000
 
