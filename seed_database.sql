@@ -1,3 +1,4 @@
+CREATE DATABASE IF NOT EXISTS SingleCoinStatArb;
 USE SingleCoinStatArb;
 DROP TABLE IF EXISTS available_balance_history;
 DROP TABLE IF EXISTS balance_history;
