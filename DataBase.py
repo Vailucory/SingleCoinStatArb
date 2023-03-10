@@ -659,6 +659,10 @@ class Repository:
                             order['leverage']))
 
     @staticmethod
+    def get_all_market_orders():
+        return Repository.ExecuteWithResult("SELECT * FROM orders WHERE orders.type == 'MARKET'")
+
+    @staticmethod
     def update_order_current_parameters(current_profit, last_price, symbol):
         Repository.Execute("UPDATE orders SET lastPrice = ?, currentProfit = ? WHERE symbol == ?", (last_price, current_profit, symbol))
 

@@ -151,7 +151,11 @@ class BinanceAPI:
             if is_api_call_possible(BALANCE_WEIGHT):
                 t = time.time() * 1000
                 Repository.add_weight(weight=BALANCE_WEIGHT, method='balance', time=t)
-                balance = [{'balance':double(entry['balance']), 'available_balance':double(entry['availableBalance'])} for entry in BinanceAPI.client.balance() if entry['asset'] == 'USDT'][0]
+                balance = [{'balance':double(entry['balance']),
+                            'available_balance':double(entry['availableBalance']),
+                            'asset':entry['asset'],
+                            'crossUnPnl':entry['crossUnPnl']} 
+                            for entry in BinanceAPI.client.balance() if entry['asset'] == 'USDT'][0]
                 Repository.update_weight_time(old_time=t, new_time=time.time() * 1000)
                 return balance
             #wait 1 second and try to repeat
